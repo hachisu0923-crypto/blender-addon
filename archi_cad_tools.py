@@ -138,6 +138,37 @@ def snap_to_grid(point, context):
     return Vector((snapped_x, snapped_y, point.z))
 
 
+def _make_pillar_bm(w, d, h, shape, segments):
+    """柱の BMesh を生成して返す (w/d/h は Blender 単位=m)"""
+    bm = bmesh.new()
+    if shape == 'RECT':
+        vb = [
+            bm.verts.new((-w/2, -d/2, 0)), bm.verts.new(( w/2, -d/2, 0)),
+            bm.verts.new(( w/2,  d/2, 0)), bm.verts.new((-w/2,  d/2, 0)),
+        ]
+        vt = [
+            bm.verts.new((-w/2, -d/2, h)), bm.verts.new(( w/2, -d/2, h)),
+            bm.verts.new(( w/2,  d/2, h)), bm.verts.new((-w/2,  d/2, h)),
+        ]
+        bm.faces.new(vb); bm.faces.new(vt[::-1])
+        for i in range(4):
+            ni = (i + 1) % 4
+            bm.faces.new([vb[i], vb[ni], vt[ni], vt[i]])
+    else:
+        r = w / 2
+        vb, vt = [], []
+        for i in range(segments):
+            ang = 2 * math.pi * i / segments
+            x, y = r * math.cos(ang), r * math.sin(ang)
+            vb.append(bm.verts.new((x, y, 0)))
+            vt.append(bm.verts.new((x, y, h)))
+        bm.faces.new(vb); bm.faces.new(vt[::-1])
+        for i in range(segments):
+            ni = (i + 1) % segments
+            bm.faces.new([vb[i], vb[ni], vt[ni], vt[i]])
+    return bm
+
+
 # ------------------------------------------------------------------ #
 #  シーンプロパティ（グリッドスナップ設定）
 # ------------------------------------------------------------------ #
@@ -206,80 +237,21 @@ class ARCHICAD_OT_add_pillar(bpy.types.Operator):
     )
 
     def execute(self, context):
-        w = mm(self.width)
-        d = mm(self.depth)
-        h = mm(self.height)
         lx, ly, lz = mm(self.loc[0]), mm(self.loc[1]), mm(self.loc[2])
-
-        bm = bmesh.new()
-
-        if self.shape == 'RECT':
-            # 角柱
-            verts_bottom = [
-                bm.verts.new((-w/2, -d/2, 0)),
-                bm.verts.new(( w/2, -d/2, 0)),
-                bm.verts.new(( w/2,  d/2, 0)),
-                bm.verts.new((-w/2,  d/2, 0)),
-            ]
-            verts_top = [
-                bm.verts.new((-w/2, -d/2, h)),
-                bm.verts.new(( w/2, -d/2, h)),
-                bm.verts.new(( w/2,  d/2, h)),
-                bm.verts.new((-w/2,  d/2, h)),
-            ]
-            # 底面
-            bm.faces.new(verts_bottom)
-            # 上面
-            bm.faces.new(verts_top[::-1])
-            # 側面
-            for i in range(4):
-                ni = (i + 1) % 4
-                bm.faces.new([
-                    verts_bottom[i], verts_bottom[ni],
-                    verts_top[ni], verts_top[i]
-                ])
-        else:
-            # 丸柱
-            r = w / 2  # 幅を直径として使用
-            verts_bottom = []
-            verts_top = []
-            for i in range(self.segments):
-                angle = 2 * math.pi * i / self.segments
-                x = r * math.cos(angle)
-                y = r * math.sin(angle)
-                verts_bottom.append(bm.verts.new((x, y, 0)))
-                verts_top.append(bm.verts.new((x, y, h)))
-            bm.faces.new(verts_bottom)
-            bm.faces.new(verts_top[::-1])
-            for i in range(self.segments):
-                ni = (i + 1) % self.segments
-                bm.faces.new([
-                    verts_bottom[i], verts_bottom[ni],
-                    verts_top[ni], verts_top[i]
-                ])
-
+        bm = _make_pillar_bm(mm(self.width), mm(self.depth), mm(self.height),
+                              self.shape, self.segments)
         mesh = bpy.data.meshes.new("柱")
-        bm.to_mesh(mesh)
-        bm.free()
-        mesh.update()
-
+        bm.to_mesh(mesh); bm.free(); mesh.update()
         obj = bpy.data.objects.new("柱", mesh)
         obj.location = (lx, ly, lz)
         context.collection.objects.link(obj)
-
-        # スムーズシェード（丸柱のみ）
         if self.shape == 'CIRCLE':
-            for poly in mesh.polygons:
-                poly.use_smooth = True
-
+            for poly in mesh.polygons: poly.use_smooth = True
         if self.auto_material:
             apply_material(obj, "柱_木材", (0.55, 0.35, 0.18, 1.0), "mat_pillar")
-
-        # 選択状態にする
         bpy.ops.object.select_all(action='DESELECT')
         obj.select_set(True)
         context.view_layer.objects.active = obj
-
         dim_str = f"{self.width}×{self.depth}×{self.height}mm"
         self.report({'INFO'}, f"柱を追加: {dim_str}")
         return {'FINISHED'}
@@ -313,6 +285,124 @@ class ARCHICAD_OT_add_pillar(bpy.types.Operator):
         row.prop(self, "loc", index=1, text="Y")
         row.prop(self, "loc", index=2, text="Z")
 
+        layout.prop(self, "auto_material")
+
+
+# ------------------------------------------------------------------ #
+#  柱 連続配置 オペレーター
+# ------------------------------------------------------------------ #
+
+class ARCHICAD_OT_place_pillars(bpy.types.Operator):
+    """グリッド上で柱を連続配置（クリックで配置 / 右クリック・ESC で終了）"""
+    bl_idname = "archicad.place_pillars"
+    bl_label = "柱を連続配置"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    width: FloatProperty(
+        name="幅 X (mm)", default=105, min=1, max=10000,
+    )
+    depth: FloatProperty(
+        name="奥行 Y (mm)", default=105, min=1, max=10000,
+    )
+    height: FloatProperty(
+        name="高さ Z (mm)", default=2800, min=1, max=50000,
+    )
+    shape: EnumProperty(
+        name="断面形状",
+        items=[('RECT', '角柱', ''), ('CIRCLE', '丸柱', '')],
+        default='RECT',
+    )
+    segments: IntProperty(name="円の分割数", default=32, min=8, max=128)
+    auto_material: BoolProperty(name="自動マテリアル", default=True)
+
+    def invoke(self, context, event):
+        self._preview = None
+        self._count = 0
+        snap_hint = "  [SNAP ON]" if context.scene.archicad.snap_enabled else ""
+        context.workspace.status_text_set(
+            f"クリック: 柱を配置  |  右クリック・ESC: 終了{snap_hint}")
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type == 'MOUSEMOVE':
+            pos = self._mouse_to_location(context, event)
+            pos = snap_to_grid(pos, context)
+            self._update_preview(pos, context)
+            context.area.tag_redraw()
+
+        elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            pos = self._mouse_to_location(context, event)
+            pos = snap_to_grid(pos, context)
+            self._place_one(context, pos)
+
+        elif event.type in {'RIGHTMOUSE', 'ESC'}:
+            self._remove_preview(context)
+            context.workspace.status_text_set(None)
+            return {'FINISHED'} if self._count > 0 else {'CANCELLED'}
+
+        elif event.type in _NAV_EVENTS:
+            return {'PASS_THROUGH'}
+
+        return {'RUNNING_MODAL'}
+
+    # ---- ヘルパー ----
+
+    def _mouse_to_location(self, context, event):
+        region = context.region
+        rv3d = context.region_data
+        coord = (event.mouse_region_x, event.mouse_region_y)
+        origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+        direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+        z = context.scene.cursor.location.z
+        t = (z - origin.z) / direction.z if abs(direction.z) > 1e-6 else 0.0
+        return Vector((origin.x + t * direction.x,
+                       origin.y + t * direction.y, z))
+
+    def _place_one(self, context, pos):
+        bm = _make_pillar_bm(mm(self.width), mm(self.depth), mm(self.height),
+                             self.shape, self.segments)
+        mesh = bpy.data.meshes.new("柱")
+        bm.to_mesh(mesh); bm.free(); mesh.update()
+        obj = bpy.data.objects.new("柱", mesh)
+        obj.location = pos
+        context.collection.objects.link(obj)
+        if self.shape == 'CIRCLE':
+            for poly in mesh.polygons: poly.use_smooth = True
+        if self.auto_material:
+            apply_material(obj, "柱_木材", (0.55, 0.35, 0.18, 1.0), "mat_pillar")
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+        self._count += 1
+
+    def _update_preview(self, pos, context):
+        if self._preview is None:
+            bm = _make_pillar_bm(mm(self.width), mm(self.depth),
+                                 mm(self.height), self.shape, self.segments)
+            mesh = bpy.data.meshes.new("_pillar_preview")
+            bm.to_mesh(mesh); bm.free(); mesh.update()
+            self._preview = bpy.data.objects.new("_pillar_preview", mesh)
+            self._preview.display_type = 'WIRE'
+            context.collection.objects.link(self._preview)
+        self._preview.location = pos
+
+    def _remove_preview(self, context):
+        if self._preview is not None:
+            mesh = self._preview.data
+            bpy.data.objects.remove(self._preview)
+            bpy.data.meshes.remove(mesh)
+            self._preview = None
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "shape")
+        layout.prop(self, "width")
+        if self.shape == 'RECT':
+            layout.prop(self, "depth")
+        else:
+            layout.prop(self, "segments")
+        layout.prop(self, "height")
         layout.prop(self, "auto_material")
 
 
@@ -1226,7 +1316,9 @@ class ARCHICAD_PT_main_panel(bpy.types.Panel):
         # 構造
         box2 = layout.box()
         box2.label(text="構造要素", icon='MESH_CUBE')
-        box2.operator("archicad.add_pillar", text="柱", icon='MESH_CUBE')
+        row_p = box2.row(align=True)
+        row_p.operator("archicad.add_pillar",    text="柱",    icon='MESH_CUBE')
+        row_p.operator("archicad.place_pillars", text="連続配置", icon='SNAP_ON')
         box2.operator("archicad.add_wall",   text="壁", icon='MOD_SOLIDIFY')
         box2.operator("archicad.add_floor",  text="床", icon='MESH_PLANE')
 
@@ -1288,6 +1380,7 @@ classes = [
     ARCHICAD_Preferences,
     ARCHICAD_SceneProps,
     ARCHICAD_OT_add_pillar,
+    ARCHICAD_OT_place_pillars,
     ARCHICAD_OT_add_wall,
     ARCHICAD_OT_add_floor,
     ARCHICAD_OT_add_opening,
