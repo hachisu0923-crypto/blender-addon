@@ -104,6 +104,19 @@ def apply_material(obj, name, color, pref_key=""):
         obj.data.materials.append(mat)
 
 
+# モーダル中にビューナビゲーション（ズーム・パン・回転）へ素通しするイベント
+_NAV_EVENTS = {
+    'MIDDLEMOUSE',
+    'WHEELUPMOUSE', 'WHEELDOWNMOUSE',
+    'WHEELINMOUSE', 'WHEELOUTMOUSE',
+    'NUMPAD_1', 'NUMPAD_2', 'NUMPAD_3',
+    'NUMPAD_4', 'NUMPAD_5', 'NUMPAD_6',
+    'NUMPAD_7', 'NUMPAD_8', 'NUMPAD_9',
+    'NUMPAD_0', 'NUMPAD_PERIOD',
+    'NUMPAD_PLUS', 'NUMPAD_MINUS',
+}
+
+
 def snap_to_grid(point, context):
     """グリッドスナップが有効なら最近傍グリッド交点に丸める"""
     props = context.scene.archicad
@@ -488,6 +501,9 @@ class ARCHICAD_OT_add_wall(bpy.types.Operator):
             self._remove_preview(context)
             context.workspace.status_text_set(None)
             return {'CANCELLED'}
+
+        elif event.type in _NAV_EVENTS:
+            return {'PASS_THROUGH'}
 
         return {'RUNNING_MODAL'}
 
@@ -882,6 +898,9 @@ class ARCHICAD_OT_add_floor(bpy.types.Operator):
             self._remove_preview(context)
             context.workspace.status_text_set(None)
             return {'CANCELLED'}
+
+        elif event.type in _NAV_EVENTS:
+            return {'PASS_THROUGH'}
 
         return {'RUNNING_MODAL'}
 
