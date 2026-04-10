@@ -24,6 +24,7 @@ from bpy.props import (
     BoolProperty,
     FloatVectorProperty,
     StringProperty,
+    PointerProperty,
 )
 from bpy_extras import view3d_utils
 from mathutils import Vector
@@ -101,6 +102,42 @@ def apply_material(obj, name, color, pref_key=""):
         obj.data.materials[0] = mat
     else:
         obj.data.materials.append(mat)
+
+
+def snap_to_grid(point, context):
+    """グリッドスナップが有効なら最近傍グリッド交点に丸める"""
+    props = context.scene.archicad
+    if not props.snap_enabled:
+        return point
+    sx = mm(props.snap_span_x)
+    sy = mm(props.snap_span_y)
+    if sx <= 0 or sy <= 0:
+        return point
+    snapped_x = round(point.x / sx) * sx
+    snapped_y = round(point.y / sy) * sy
+    return Vector((snapped_x, snapped_y, point.z))
+
+
+# ------------------------------------------------------------------ #
+#  シーンプロパティ（グリッドスナップ設定）
+# ------------------------------------------------------------------ #
+
+class ARCHICAD_SceneProps(bpy.types.PropertyGroup):
+    snap_enabled: BoolProperty(
+        name="グリッドスナップ",
+        default=False,
+        description="通り芯グリッドに吸着して配置",
+    )
+    snap_span_x: FloatProperty(
+        name="Xスパン (mm)",
+        default=3640, min=1, max=100000,
+        description="X方向グリッド間隔 (mm)",
+    )
+    snap_span_y: FloatProperty(
+        name="Yスパン (mm)",
+        default=2730, min=1, max=100000,
+        description="Y方向グリッド間隔 (mm)",
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -228,6 +265,11 @@ class ARCHICAD_OT_add_pillar(bpy.types.Operator):
         return {'FINISHED'}
 
     def invoke(self, context, event):
+        props = context.scene.archicad
+        if props.snap_enabled:
+            cur = context.scene.cursor.location
+            snapped = snap_to_grid(Vector(cur), context)
+            self.loc = (snapped.x * 1000, snapped.y * 1000, snapped.z * 1000)
         return context.window_manager.invoke_props_dialog(self, width=320)
 
     def draw(self, context):
@@ -387,8 +429,9 @@ class ARCHICAD_OT_add_wall(bpy.types.Operator):
             self.thickness = self._DEFAULT_THICKNESS.get(self.wall_type, 120)
         self._start = None
         self._preview = None
+        snap_hint = "  [SNAP ON]" if context.scene.archicad.snap_enabled else ""
         context.workspace.status_text_set(
-            "クリック: 始点を指定  |  ESC: キャンセル")
+            f"クリック: 始点を指定  |  ESC: キャンセル{snap_hint}")
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
@@ -396,11 +439,13 @@ class ARCHICAD_OT_add_wall(bpy.types.Operator):
         if event.type == 'MOUSEMOVE':
             if self._start is not None:
                 cur = self._mouse_to_ground(context, event)
+                cur = snap_to_grid(cur, context)
                 self._update_preview(cur)
                 context.area.tag_redraw()
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
             pos = self._mouse_to_ground(context, event)
+            pos = snap_to_grid(pos, context)
             if self._start is None:
                 # 始点を確定してプレビュー開始
                 self._start = pos
@@ -795,8 +840,9 @@ class ARCHICAD_OT_add_floor(bpy.types.Operator):
     def invoke(self, context, event):
         self._start = None
         self._preview = None
+        snap_hint = "  [SNAP ON]" if context.scene.archicad.snap_enabled else ""
         context.workspace.status_text_set(
-            "クリック: 始点を指定  |  ESC: キャンセル")
+            f"クリック: 始点を指定  |  ESC: キャンセル{snap_hint}")
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
@@ -804,11 +850,13 @@ class ARCHICAD_OT_add_floor(bpy.types.Operator):
         if event.type == 'MOUSEMOVE':
             if self._start is not None:
                 cur = self._mouse_to_floor(context, event)
+                cur = snap_to_grid(cur, context)
                 self._update_preview(cur)
                 context.area.tag_redraw()
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
             pos = self._mouse_to_floor(context, event)
+            pos = snap_to_grid(pos, context)
             if self._start is None:
                 self._start = pos
                 self._create_preview(context)
@@ -918,6 +966,10 @@ class ARCHICAD_OT_add_grid(bpy.types.Operator):
         sx = mm(self.span_x)
         sy = mm(self.span_y)
 
+        # グリッドスナップ用にスパンをシーンプロパティへ保存
+        context.scene.archicad.snap_span_x = self.span_x
+        context.scene.archicad.snap_span_y = self.span_y
+
         total_x = sx * (self.count_x - 1)
         total_y = sy * (self.count_y - 1)
 
@@ -1026,6 +1078,17 @@ class ARCHICAD_PT_main_panel(bpy.types.Panel):
         box.label(text="基準", icon='MESH_GRID')
         box.operator("archicad.add_grid", text="通り芯", icon='MESH_GRID')
 
+        # グリッドスナップ
+        box_snap = layout.box()
+        scene_props = context.scene.archicad
+        row = box_snap.row()
+        row.label(text="グリッドスナップ", icon='SNAP_ON')
+        row.prop(scene_props, "snap_enabled", text="")
+        if scene_props.snap_enabled:
+            sub = box_snap.column(align=True)
+            sub.prop(scene_props, "snap_span_x", text="X (mm)")
+            sub.prop(scene_props, "snap_span_y", text="Y (mm)")
+
         # 構造
         box2 = layout.box()
         box2.label(text="構造要素", icon='MESH_CUBE')
@@ -1089,6 +1152,7 @@ class ARCHICAD_Preferences(bpy.types.AddonPreferences):
 
 classes = [
     ARCHICAD_Preferences,
+    ARCHICAD_SceneProps,
     ARCHICAD_OT_add_pillar,
     ARCHICAD_OT_add_wall,
     ARCHICAD_OT_add_floor,
@@ -1101,9 +1165,11 @@ classes = [
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.Scene.archicad = PointerProperty(type=ARCHICAD_SceneProps)
 
 
 def unregister():
+    del bpy.types.Scene.archicad
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
 
