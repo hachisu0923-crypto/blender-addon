@@ -116,6 +116,13 @@ _NAV_EVENTS = {
     'NUMPAD_PLUS', 'NUMPAD_MINUS',
 }
 
+# 数値入力キー（通常キーボード）→ 文字マッピング
+_NUM_KEYS = {
+    'ZERO': '0', 'ONE': '1', 'TWO': '2', 'THREE': '3', 'FOUR': '4',
+    'FIVE': '5', 'SIX': '6', 'SEVEN': '7', 'EIGHT': '8', 'NINE': '9',
+    'PERIOD': '.', 'COMMA': '.',
+}
+
 
 def snap_to_grid(point, context):
     """グリッドスナップが有効なら最近傍グリッド交点に丸める"""
@@ -442,9 +449,9 @@ class ARCHICAD_OT_add_wall(bpy.types.Operator):
             self.thickness = self._DEFAULT_THICKNESS.get(self.wall_type, 120)
         self._start = None
         self._preview = None
-        snap_hint = "  [SNAP ON]" if context.scene.archicad.snap_enabled else ""
-        context.workspace.status_text_set(
-            f"クリック: 始点を指定  |  ESC: キャンセル{snap_hint}")
+        self._num_str = ""      # 数値入力バッファ
+        self._last_mouse = None # 最後のマウス位置（数値確定時の方向決定用）
+        self._update_status(context)
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
@@ -453,51 +460,70 @@ class ARCHICAD_OT_add_wall(bpy.types.Operator):
             if self._start is not None:
                 cur = self._mouse_to_ground(context, event)
                 cur = snap_to_grid(cur, context)
-                self._update_preview(cur)
+                self._last_mouse = cur
+                if self._num_str:
+                    self._update_preview_numeric(cur)
+                else:
+                    self._update_preview(cur)
                 context.area.tag_redraw()
 
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            self._num_str = ""  # 数値入力中でもクリック優先
             pos = self._mouse_to_ground(context, event)
             pos = snap_to_grid(pos, context)
             if self._start is None:
-                # 始点を確定してプレビュー開始
                 self._start = pos
+                self._last_mouse = pos
                 self._create_preview(context)
-                context.workspace.status_text_set(
-                    "クリック: 次の点  |  右クリック: 終了  |  ESC: キャンセル")
             else:
-                # 壁を配置
-                start, end = self._start, pos
-                dx = end.x - start.x
-                dy = end.y - start.y
+                self._place_wall_from_points(context, self._start, pos)
+                self._start = pos
+            self._update_status(context)
 
-                if abs(dx) >= abs(dy):
-                    self.direction = 'X'
-                    self.length = abs(dx) * 1000
-                    self.loc = (min(start.x, end.x) * 1000,
-                                start.y * 1000, start.z * 1000)
+        elif event.value == 'PRESS' and event.type in _NUM_KEYS:
+            if self._start is not None:
+                ch = _NUM_KEYS[event.type]
+                if ch == '.' and '.' in self._num_str:
+                    pass  # 小数点は一つだけ
                 else:
-                    self.direction = 'Y'
-                    self.length = abs(dy) * 1000
-                    self.loc = (start.x * 1000,
-                                min(start.y, end.y) * 1000, start.z * 1000)
+                    self._num_str += ch
+                    if self._last_mouse:
+                        self._update_preview_numeric(self._last_mouse)
+                    context.area.tag_redraw()
+                self._update_status(context)
 
-                if self.length >= 1:
-                    self.execute(context)
+        elif event.type == 'BACK_SPACE' and event.value == 'PRESS':
+            if self._num_str:
+                self._num_str = self._num_str[:-1]
+                if self._last_mouse:
+                    if self._num_str:
+                        self._update_preview_numeric(self._last_mouse)
+                    else:
+                        self._update_preview(self._last_mouse)
+                context.area.tag_redraw()
+                self._update_status(context)
+
+        elif event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
+            if self._start is not None and self._num_str:
+                try:
+                    length_mm = float(self._num_str)
+                except ValueError:
+                    self._num_str = ""
+                    self._update_status(context)
+                    return {'RUNNING_MODAL'}
+                if length_mm >= 1 and self._last_mouse:
+                    self._place_wall_numeric(context, length_mm)
                 else:
                     self.report({'WARNING'}, "長さが短すぎます")
-
-                # 終点を次の始点にして連続配置を継続
-                self._start = pos
+                self._num_str = ""
+                self._update_status(context)
 
         elif event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
-            # 右クリックで終了（配置済みの壁は残る）
             self._remove_preview(context)
             context.workspace.status_text_set(None)
             return {'FINISHED'}
 
         elif event.type == 'ESC':
-            # ESC でキャンセル
             self._remove_preview(context)
             context.workspace.status_text_set(None)
             return {'CANCELLED'}
@@ -560,6 +586,95 @@ class ARCHICAD_OT_add_wall(bpy.types.Operator):
             bpy.data.objects.remove(self._preview)
             bpy.data.meshes.remove(mesh)
             self._preview = None
+
+    def _place_wall_from_points(self, context, start, end):
+        """2点クリックから壁を配置"""
+        dx = end.x - start.x
+        dy = end.y - start.y
+        if abs(dx) >= abs(dy):
+            self.direction = 'X'
+            self.length = abs(dx) * 1000
+            self.loc = (min(start.x, end.x) * 1000,
+                        start.y * 1000, start.z * 1000)
+        else:
+            self.direction = 'Y'
+            self.length = abs(dy) * 1000
+            self.loc = (start.x * 1000,
+                        min(start.y, end.y) * 1000, start.z * 1000)
+        if self.length >= 1:
+            self.execute(context)
+        else:
+            self.report({'WARNING'}, "長さが短すぎます")
+
+    def _place_wall_numeric(self, context, length_mm):
+        """数値入力した距離で壁を配置し、終点を次の始点にする"""
+        start = self._start
+        mouse = self._last_mouse
+        dx = mouse.x - start.x
+        dy = mouse.y - start.y
+        length_m = mm(length_mm)
+        if abs(dx) >= abs(dy):
+            self.direction = 'X'
+            self.length = length_mm
+            sign = 1.0 if dx >= 0 else -1.0
+            end_x = start.x + sign * length_m
+            self.loc = (min(start.x, end_x) * 1000,
+                        start.y * 1000, start.z * 1000)
+            next_start = Vector((end_x, start.y, start.z))
+        else:
+            self.direction = 'Y'
+            self.length = length_mm
+            sign = 1.0 if dy >= 0 else -1.0
+            end_y = start.y + sign * length_m
+            self.loc = (start.x * 1000,
+                        min(start.y, end_y) * 1000, start.z * 1000)
+            next_start = Vector((start.x, end_y, start.z))
+        self.execute(context)
+        self._start = next_start
+        self._last_mouse = next_start
+
+    def _update_preview_numeric(self, mouse_pos):
+        """数値入力中のプレビュー（タイプした長さで表示）"""
+        if self._preview is None or self._start is None or not self._num_str:
+            return
+        try:
+            length_mm = float(self._num_str)
+        except ValueError:
+            return
+        start = self._start
+        h = mm(self.height)
+        dx = mouse_pos.x - start.x
+        dy = mouse_pos.y - start.y
+        length_m = mm(length_mm)
+        bm = bmesh.new()
+        if abs(dx) >= abs(dy):
+            sign = 1.0 if dx >= 0 else -1.0
+            d = sign * length_m
+            v1 = bm.verts.new((0, 0, 0)); v2 = bm.verts.new((d, 0, 0))
+            v3 = bm.verts.new((d, 0, h)); v4 = bm.verts.new((0, 0, h))
+        else:
+            sign = 1.0 if dy >= 0 else -1.0
+            d = sign * length_m
+            v1 = bm.verts.new((0, 0, 0)); v2 = bm.verts.new((0, d, 0))
+            v3 = bm.verts.new((0, d, h)); v4 = bm.verts.new((0, 0, h))
+        bm.faces.new([v1, v2, v3, v4])
+        bm.to_mesh(self._preview.data)
+        bm.free()
+        self._preview.data.update()
+        self._preview.location = start
+
+    def _update_status(self, context):
+        """ステータスバーテキストを状態に応じて更新"""
+        snap_hint = "  [SNAP ON]" if context.scene.archicad.snap_enabled else ""
+        if self._start is None:
+            context.workspace.status_text_set(
+                f"クリック: 始点を指定  |  ESC: キャンセル{snap_hint}")
+        elif self._num_str:
+            context.workspace.status_text_set(
+                f"距離: {self._num_str} mm  |  Enter: 確定  |  BS: 修正  |  ESC: キャンセル")
+        else:
+            context.workspace.status_text_set(
+                f"クリック: 次の点  |  数字: 距離入力  |  右クリック: 終了  |  ESC: キャンセル{snap_hint}")
 
     def draw(self, context):
         """F9 オペレーターパネル用（配置後の調整）"""
