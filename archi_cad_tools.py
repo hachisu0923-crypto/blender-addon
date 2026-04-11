@@ -828,6 +828,106 @@ class ARCHICAD_OT_add_wall(bpy.types.Operator):
 #  開口部 (Opening) オペレーター
 # ------------------------------------------------------------------ #
 
+def _do_place_opening(context, wall_obj, opening_type, width_mm, op_height_mm,
+                      sill_height_mm, offset_mm, use_template=False,
+                      template_name="", auto_scale=True, reporter=None):
+    """壁オブジェクトに開口部カッターを作成し Boolean モディファイアを適用する。
+
+    Parameters
+    ----------
+    reporter : callable or None
+        self.report 相当の関数。不要なら None を渡す。
+    """
+    w    = mm(width_mm)
+    h    = mm(op_height_mm)
+    sill = 0.0 if opening_type == 'DOOR' else mm(sill_height_mm)
+    off  = mm(offset_mm)
+    dims = wall_obj.dimensions
+    EPS  = 0.001
+
+    # ── カッターボックスの頂点をローカル座標で計算 ──────────────
+    if dims.x > dims.y:
+        # X方向の壁: 幅はX、厚みはY
+        x1, x2 = off, off + w
+        z1, z2 = sill, sill + h
+        ht = dims.y / 2 + EPS
+        pts = [
+            (x1, -ht, z1), (x2, -ht, z1), (x2,  ht, z1), (x1,  ht, z1),
+            (x1, -ht, z2), (x2, -ht, z2), (x2,  ht, z2), (x1,  ht, z2),
+        ]
+    else:
+        # Y方向の壁: 幅はY、厚みはX
+        y1, y2 = off, off + w
+        z1, z2 = sill, sill + h
+        ht = dims.x / 2 + EPS
+        pts = [
+            (-ht, y1, z1), (ht, y1, z1), (ht, y2, z1), (-ht, y2, z1),
+            (-ht, y1, z2), (ht, y1, z2), (ht, y2, z2), (-ht, y2, z2),
+        ]
+
+    # ── カッターメッシュ（閉じたボックス）を bmesh で作成 ────────
+    cutter_mesh = bpy.data.meshes.new("_opening_cutter")
+    bm = bmesh.new()
+    v = [bm.verts.new(p) for p in pts]
+    bm.faces.new([v[0], v[1], v[2], v[3]])  # 底面
+    bm.faces.new([v[7], v[6], v[5], v[4]])  # 上面
+    bm.faces.new([v[0], v[4], v[5], v[1]])  # 背面
+    bm.faces.new([v[2], v[6], v[7], v[3]])  # 前面
+    bm.faces.new([v[0], v[3], v[7], v[4]])  # 左面
+    bm.faces.new([v[1], v[5], v[6], v[2]])  # 右面
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    bm.to_mesh(cutter_mesh)
+    bm.free()
+    cutter_mesh.update()
+
+    # ── カッターオブジェクトを壁と同じ原点に配置してリンク ───────
+    cutter_obj = bpy.data.objects.new("開口カッター", cutter_mesh)
+    cutter_obj.location    = wall_obj.location
+    cutter_obj.display_type = 'WIRE'
+    cutter_obj.hide_render  = True
+    cutter_obj.hide_viewport = False
+    link_to_named_collection(cutter_obj, "開口カッター", context)
+
+    context.view_layer.update()
+
+    # ── Boolean DIFFERENCE モディファイアを追加 ──────────────────
+    mod = wall_obj.modifiers.new("開口部ブーリアン", 'BOOLEAN')
+    mod.operation = 'DIFFERENCE'
+    mod.solver    = 'EXACT'
+    mod.object    = cutter_obj
+    mod.use_self  = False
+
+    # ── カスタムオブジェクト挿入 ──────────────────────────────────
+    if use_template and template_name:
+        template = bpy.data.objects.get(template_name)
+        if template is None:
+            if reporter:
+                reporter({'WARNING'},
+                    f"テンプレート '{template_name}' が見つかりません")
+        else:
+            if dims.x > dims.y:
+                local_center = Vector((off + w / 2, 0.0, sill + h / 2))
+                rot_z = 0.0
+            else:
+                local_center = Vector((0.0, off + w / 2, sill + h / 2))
+                rot_z = math.pi / 2
+
+            world_center = wall_obj.matrix_world @ local_center
+            new_obj = template.copy()
+            link_to_named_collection(new_obj, "開口部", context)
+            new_obj.location       = world_center
+            new_obj.rotation_euler = (0.0, 0.0, rot_z)
+
+            if auto_scale:
+                tdx = template.dimensions.x
+                tdz = template.dimensions.z
+                if tdx > 1e-6 and tdz > 1e-6:
+                    new_obj.scale = (w / tdx, w / tdx, h / tdz)
+                elif reporter:
+                    reporter({'WARNING'},
+                        "テンプレートの寸法がゼロのためスケール適用をスキップ")
+
+
 class ARCHICAD_OT_add_opening(bpy.types.Operator):
     """選択中の壁に開口部（窓・ドア）を開ける"""
     bl_idname = "archicad.add_opening"
@@ -881,97 +981,15 @@ class ARCHICAD_OT_add_opening(bpy.types.Operator):
             self.report({'ERROR'}, "壁オブジェクトを選択してください")
             return {'CANCELLED'}
 
-        w    = mm(self.width)
-        h    = mm(self.op_height)
-        sill = 0.0 if self.opening_type == 'DOOR' else mm(self.sill_height)
-        off  = mm(self.offset)
-        dims = obj.dimensions   # スケール=1・回転なし前提のワールドサイズ
-        EPS  = 0.001            # 壁厚より少し大きくして確実に貫通させる
-
-        # ── カッターボックスの頂点をローカル座標で計算 ──────────────
-        if dims.x > dims.y:
-            # X方向の壁: 幅はX、厚みはY
-            x1, x2 = off, off + w
-            z1, z2 = sill, sill + h
-            ht = dims.y / 2 + EPS
-            pts = [
-                (x1, -ht, z1), (x2, -ht, z1), (x2,  ht, z1), (x1,  ht, z1),
-                (x1, -ht, z2), (x2, -ht, z2), (x2,  ht, z2), (x1,  ht, z2),
-            ]
-        else:
-            # Y方向の壁: 幅はY、厚みはX
-            y1, y2 = off, off + w
-            z1, z2 = sill, sill + h
-            ht = dims.x / 2 + EPS
-            pts = [
-                (-ht, y1, z1), (ht, y1, z1), (ht, y2, z1), (-ht, y2, z1),
-                (-ht, y1, z2), (ht, y1, z2), (ht, y2, z2), (-ht, y2, z2),
-            ]
-
-        # ── カッターメッシュ（閉じたボックス）を bmesh で作成 ────────
-        cutter_mesh = bpy.data.meshes.new("_opening_cutter")
-        bm = bmesh.new()
-        v = [bm.verts.new(p) for p in pts]
-        bm.faces.new([v[0], v[1], v[2], v[3]])  # 底面
-        bm.faces.new([v[7], v[6], v[5], v[4]])  # 上面
-        bm.faces.new([v[0], v[4], v[5], v[1]])  # 背面
-        bm.faces.new([v[2], v[6], v[7], v[3]])  # 前面
-        bm.faces.new([v[0], v[3], v[7], v[4]])  # 左面
-        bm.faces.new([v[1], v[5], v[6], v[2]])  # 右面
-        bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])  # 法線を外向きに統一
-        bm.to_mesh(cutter_mesh)
-        bm.free()
-        cutter_mesh.update()
-
-        # ── カッターオブジェクトを壁と同じ原点に配置してリンク ───────
-        cutter_obj = bpy.data.objects.new("開口カッター", cutter_mesh)
-        cutter_obj.location = obj.location  # 壁のローカル座標系と一致
-        cutter_obj.display_type = 'WIRE'    # ワイヤー表示
-        cutter_obj.hide_render = True       # レンダリングから除外
-        cutter_obj.hide_viewport = False    # ブーリアンが参照できるよう表示を維持
-        link_to_named_collection(cutter_obj, "開口カッター", context)
-
-        # ── ビューレイヤーを更新してカッターを確実に認識させる ────────
-        context.view_layer.update()
-
-        # ── Boolean DIFFERENCE モディファイアを追加（適用せず残す）──
-        mod = obj.modifiers.new("開口部ブーリアン", 'BOOLEAN')
-        mod.operation = 'DIFFERENCE'
-        mod.solver    = 'EXACT'
-        mod.object    = cutter_obj
-        mod.use_self  = False
-
-        # ── カスタムオブジェクト挿入 ──────────────────────────────────
-        if self.use_template and self.template_name:
-            template = bpy.data.objects.get(self.template_name)
-            if template is None:
-                self.report({'WARNING'},
-                    f"テンプレート '{self.template_name}' が見つかりません")
-            else:
-                # X壁: 面法線 ±Y → 回転不要 / Y壁: 面法線 ±X → Z軸 90°回転
-                if dims.x > dims.y:
-                    local_center = Vector((off + w / 2, 0.0, sill + h / 2))
-                    rot_z = 0.0
-                else:
-                    local_center = Vector((0.0, off + w / 2, sill + h / 2))
-                    rot_z = math.pi / 2
-
-                world_center = obj.matrix_world @ local_center
-                new_obj = template.copy()
-                link_to_named_collection(new_obj, "開口部", context)
-                new_obj.location = world_center
-                new_obj.rotation_euler = (0.0, 0.0, rot_z)
-
-                if self.auto_scale:
-                    tdx = template.dimensions.x
-                    tdz = template.dimensions.z
-                    if tdx > 1e-6 and tdz > 1e-6:
-                        new_obj.scale = (w / tdx, w / tdx, h / tdz)
-                    else:
-                        self.report({'WARNING'},
-                            "テンプレートの寸法がゼロのためスケール適用をスキップ")
-        # ─────────────────────────────────────────────────────────────
-
+        _do_place_opening(
+            context, obj,
+            self.opening_type, self.width, self.op_height, self.sill_height,
+            self.offset,
+            use_template=self.use_template,
+            template_name=self.template_name,
+            auto_scale=self.auto_scale,
+            reporter=self.report,
+        )
         self.report({'INFO'},
             f"開口部を追加: {self.width}×{self.op_height}mm "
             f"(FL+{self.sill_height}mm)")
@@ -1006,6 +1024,221 @@ class ARCHICAD_OT_add_opening(bpy.types.Operator):
             box3.prop_search(self, "template_name",
                              context.scene, "objects", text="オブジェクト")
             box3.prop(self, "auto_scale")
+
+
+# ------------------------------------------------------------------ #
+#  開口部クリック配置 モーダルオペレーター
+# ------------------------------------------------------------------ #
+
+class ARCHICAD_OT_place_opening(bpy.types.Operator):
+    """ビューポートで壁をクリックして開口部を配置する"""
+    bl_idname = "archicad.place_opening"
+    bl_label  = "開口部をクリック配置"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    opening_type: EnumProperty(
+        name="種類",
+        items=[
+            ('WINDOW', '窓', '窓用の開口'),
+            ('DOOR',   'ドア', 'ドア用の開口'),
+        ],
+        default='WINDOW',
+    )
+    width: FloatProperty(
+        name="幅 (mm)", default=1650, min=100, max=10000,
+        description="開口部の幅 mm"
+    )
+    op_height: FloatProperty(
+        name="高さ (mm)", default=1100, min=100, max=10000,
+        description="開口部の高さ mm",
+        update=_on_op_height_change,
+    )
+    sill_height: FloatProperty(
+        name="窓台高さ (mm)", default=900, min=0, max=10000,
+        description="FL（床面）からの高さ mm",
+        update=_on_sill_height_change,
+    )
+    use_template: BoolProperty(
+        name="カスタムオブジェクトを挿入",
+        default=False,
+        description="開口部にシーン内のオブジェクトをはめ込む",
+    )
+    template_name: StringProperty(
+        name="オブジェクト名",
+        default="",
+        description="挿入するオブジェクト名（シーン内に存在すること）",
+    )
+    auto_scale: BoolProperty(
+        name="開口に自動フィット",
+        default=True,
+        description="テンプレートを開口幅・高さに合わせてスケール",
+    )
+
+    # ── インスタンス変数（クラス変数として初期化） ──────────────────
+    _preview      = None
+    _hovered_wall = None
+    _hover_offset = 0.0
+
+    # ── invoke ──────────────────────────────────────────────────────
+    def invoke(self, context, event):
+        if self.opening_type == 'DOOR':
+            self.op_height  = 2000
+            self.sill_height = 0
+            self.width = 800
+        context.workspace.status_text_set(
+            "左クリック: 開口部を配置  |  右クリック / ESC: 終了")
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    # ── modal ───────────────────────────────────────────────────────
+    def modal(self, context, event):
+        if event.type in {'RIGHTMOUSE', 'ESC'}:
+            self._remove_preview(context)
+            context.workspace.status_text_set(None)
+            return {'CANCELLED'}
+
+        if event.type in {'UNDO', 'REDO'}:
+            self._remove_preview(context)
+            context.workspace.status_text_set(None)
+            return {'CANCELLED'}
+
+        if event.type == 'MOUSEMOVE':
+            wall, offset = self._ray_cast_to_wall(context, event)
+            self._hovered_wall = wall
+            self._hover_offset = offset
+            self._update_preview(context, wall, offset)
+            if context.area:
+                context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            if self._hovered_wall is not None:
+                self._place_opening(context)
+            return {'RUNNING_MODAL'}
+
+        if event.type in _NAV_EVENTS:
+            return {'PASS_THROUGH'}
+
+        return {'RUNNING_MODAL'}
+
+    # ── レイキャスト ────────────────────────────────────────────────
+    def _ray_cast_to_wall(self, context, event):
+        """マウス位置から壁へのレイキャスト。(壁obj, offset_mm) を返す。"""
+        region = context.region
+        rv3d   = context.region_data
+        if rv3d is None:
+            return None, 0.0
+
+        coord     = (event.mouse_region_x, event.mouse_region_y)
+        origin    = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+        direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+
+        result, location, _normal, _index, obj, _matrix = context.scene.ray_cast(
+            context.view_layer.depsgraph, origin, direction)
+
+        if not result or obj is None:
+            return None, 0.0
+
+        wall_coll = bpy.data.collections.get("壁")
+        if wall_coll is None or obj not in list(wall_coll.objects):
+            return None, 0.0
+
+        # 壁ローカル座標でのオフセット計算
+        local_hit = obj.matrix_world.inverted() @ location
+        dims      = obj.dimensions
+
+        if dims.x >= dims.y:
+            min_val  = min(v.co.x for v in obj.data.vertices)
+            offset_m = local_hit.x - min_val
+        else:
+            min_val  = min(v.co.y for v in obj.data.vertices)
+            offset_m = local_hit.y - min_val
+
+        # 開口が壁からはみ出さないようクランプ
+        opening_w = mm(self.width)
+        wall_len  = max(dims.x, dims.y)
+        offset_m  = max(0.0, min(wall_len - opening_w, offset_m))
+
+        return obj, offset_m * 1000  # mm 単位で返す
+
+    # ── プレビュー更新 ──────────────────────────────────────────────
+    def _update_preview(self, context, wall, offset_mm):
+        if wall is None:
+            self._remove_preview(context)
+            return
+
+        w    = mm(self.width)
+        h    = mm(self.op_height)
+        sill = 0.0 if self.opening_type == 'DOOR' else mm(self.sill_height)
+        off  = mm(offset_mm)
+        dims = wall.dimensions
+        EPS  = 0.001
+
+        if dims.x >= dims.y:
+            x1, x2 = off, off + w
+            z1, z2 = sill, sill + h
+            ht = dims.y / 2 + EPS
+            pts = [
+                (x1, -ht, z1), (x2, -ht, z1), (x2,  ht, z1), (x1,  ht, z1),
+                (x1, -ht, z2), (x2, -ht, z2), (x2,  ht, z2), (x1,  ht, z2),
+            ]
+        else:
+            y1, y2 = off, off + w
+            z1, z2 = sill, sill + h
+            ht = dims.x / 2 + EPS
+            pts = [
+                (-ht, y1, z1), (ht, y1, z1), (ht, y2, z1), (-ht, y2, z1),
+                (-ht, y1, z2), (ht, y1, z2), (ht, y2, z2), (-ht, y2, z2),
+            ]
+
+        # プレビューオブジェクトを初回のみ生成
+        if self._preview is None:
+            mesh = bpy.data.meshes.new("_opening_preview")
+            self._preview = bpy.data.objects.new("_opening_preview", mesh)
+            self._preview.display_type = 'WIRE'
+            context.collection.objects.link(self._preview)
+
+        # メッシュを書き換え
+        bm = bmesh.new()
+        vv = [bm.verts.new(p) for p in pts]
+        bm.faces.new([vv[0], vv[1], vv[2], vv[3]])
+        bm.faces.new([vv[7], vv[6], vv[5], vv[4]])
+        bm.faces.new([vv[0], vv[4], vv[5], vv[1]])
+        bm.faces.new([vv[2], vv[6], vv[7], vv[3]])
+        bm.faces.new([vv[0], vv[3], vv[7], vv[4]])
+        bm.faces.new([vv[1], vv[5], vv[6], vv[2]])
+        bm.to_mesh(self._preview.data)
+        bm.free()
+        self._preview.data.update()
+
+        # 壁と同じワールド変換を適用（ローカル座標で作った頂点が正しい位置に来る）
+        self._preview.matrix_world = wall.matrix_world.copy()
+
+    def _remove_preview(self, context):
+        if self._preview is not None:
+            try:
+                mesh = self._preview.data
+                bpy.data.objects.remove(self._preview, do_unlink=True)
+                bpy.data.meshes.remove(mesh)
+            except ReferenceError:
+                pass
+            self._preview = None
+
+    # ── 開口部配置 ──────────────────────────────────────────────────
+    def _place_opening(self, context):
+        wall = self._hovered_wall
+        _do_place_opening(
+            context, wall,
+            self.opening_type, self.width, self.op_height, self.sill_height,
+            self._hover_offset,
+            use_template=self.use_template,
+            template_name=self.template_name,
+            auto_scale=self.auto_scale,
+            reporter=self.report,
+        )
+        self.report({'INFO'},
+            f"開口部を配置: {self.width}×{self.op_height}mm "
+            f"(FL+{self.sill_height}mm) @ {self._hover_offset:.0f}mm")
 
 
 # ------------------------------------------------------------------ #
@@ -1385,9 +1618,14 @@ class ARCHICAD_PT_main_panel(bpy.types.Panel):
         box3 = layout.box()
         box3.label(text="開口部", icon='FULLSCREEN_EXIT')
         row = box3.row(align=True)
-        op_win = row.operator("archicad.add_opening", text="窓", icon='FULLSCREEN_EXIT')
+        op_mw = row.operator("archicad.place_opening", text="窓", icon='RESTRICT_SELECT_OFF')
+        op_mw.opening_type = 'WINDOW'
+        op_md = row.operator("archicad.place_opening", text="ドア", icon='RESTRICT_SELECT_OFF')
+        op_md.opening_type = 'DOOR'
+        row2 = box3.row(align=True)
+        op_win = row2.operator("archicad.add_opening", text="詳細: 窓", icon='FULLSCREEN_EXIT')
         op_win.opening_type = 'WINDOW'
-        op_door = row.operator("archicad.add_opening", text="ドア", icon='ARMATURE_DATA')
+        op_door = row2.operator("archicad.add_opening", text="詳細: ドア", icon='ARMATURE_DATA')
         op_door.opening_type = 'DOOR'
 
         # 情報
@@ -1443,6 +1681,7 @@ classes = [
     ARCHICAD_OT_add_wall,
     ARCHICAD_OT_add_floor,
     ARCHICAD_OT_add_opening,
+    ARCHICAD_OT_place_opening,
     ARCHICAD_OT_add_grid,
     ARCHICAD_PT_main_panel,
 ]
