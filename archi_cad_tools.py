@@ -206,6 +206,21 @@ class ARCHICAD_SceneProps(bpy.types.PropertyGroup):
         default=910, min=1, max=100000,
         description="Y方向グリッド間隔 (mm)",
     )
+    foundation_base_thickness: FloatProperty(
+        name="底盤厚 (mm)",
+        default=150, min=50, max=1000,
+        description="基礎底盤の厚み mm",
+    )
+    foundation_stem_width: FloatProperty(
+        name="立ち上がり幅 (mm)",
+        default=150, min=50, max=1000,
+        description="外周立ち上がり壁の幅 mm",
+    )
+    foundation_stem_height: FloatProperty(
+        name="立ち上がり高さ (mm)",
+        default=400, min=50, max=2000,
+        description="GL から立ち上がり上端までの高さ mm",
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -1585,6 +1600,12 @@ class ARCHICAD_OT_add_foundation(bpy.types.Operator):
 
     # ── モーダル配置（床と同パターン） ───────────────────────────────
     def invoke(self, context, event):
+        # パネルで設定した寸法をオペレーターに反映
+        fp = context.scene.archicad
+        self.base_thickness = fp.foundation_base_thickness
+        self.stem_width     = fp.foundation_stem_width
+        self.stem_height    = fp.foundation_stem_height
+
         self._start   = None
         self._preview = None
         snap_hint = "  [SNAP ON]" if context.scene.archicad.snap_enabled else ""
@@ -1856,9 +1877,15 @@ class ARCHICAD_PT_main_panel(bpy.types.Panel):
         row_p = box2.row(align=True)
         row_p.operator("archicad.add_pillar",    text="柱",    icon='MESH_CUBE')
         row_p.operator("archicad.place_pillars", text="連続配置", icon='SNAP_ON')
-        box2.operator("archicad.add_wall",        text="壁",   icon='MOD_SOLIDIFY')
-        box2.operator("archicad.add_floor",       text="床",   icon='MESH_PLANE')
-        box2.operator("archicad.add_foundation",  text="基礎", icon='SNAP_FACE')
+        box2.operator("archicad.add_wall",       text="壁", icon='MOD_SOLIDIFY')
+        box2.operator("archicad.add_floor",      text="床", icon='MESH_PLANE')
+        box_f = box2.box()
+        box_f.label(text="基礎寸法 (mm)", icon='SNAP_FACE')
+        col_f = box_f.column(align=True)
+        col_f.prop(scene_props, "foundation_base_thickness", text="底盤厚")
+        col_f.prop(scene_props, "foundation_stem_width",     text="立ち上がり幅")
+        col_f.prop(scene_props, "foundation_stem_height",    text="立ち上がり高さ")
+        box_f.operator("archicad.add_foundation", text="基礎を配置", icon='SNAP_FACE')
 
         # 開口部
         box3 = layout.box()
