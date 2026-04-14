@@ -1456,6 +1456,251 @@ class ARCHICAD_OT_add_floor(bpy.types.Operator):
 
 
 # ------------------------------------------------------------------ #
+#  基礎 (Foundation) オペレーター
+# ------------------------------------------------------------------ #
+
+class ARCHICAD_OT_add_foundation(bpy.types.Operator):
+    """ベタ基礎（底盤＋外周立ち上がり壁）を凸形で生成する"""
+    bl_idname  = "archicad.add_foundation"
+    bl_label   = "基礎を追加"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    length: FloatProperty(
+        name="長さ X (mm)", default=5460, min=100, max=100000,
+        description="基礎外形の長さ（X方向）mm",
+    )
+    width: FloatProperty(
+        name="奥行 Y (mm)", default=4550, min=100, max=100000,
+        description="基礎外形の奥行（Y方向）mm",
+    )
+    base_thickness: FloatProperty(
+        name="底盤厚 (mm)", default=150, min=50, max=1000,
+        description="底盤（スラブ）の厚み mm",
+    )
+    stem_width: FloatProperty(
+        name="立ち上がり幅 (mm)", default=150, min=50, max=1000,
+        description="外周立ち上がり壁の幅 mm（直角コーナー）",
+    )
+    stem_height: FloatProperty(
+        name="立ち上がり高さ (mm)", default=400, min=50, max=2000,
+        description="GL（地盤面）から上端までの高さ mm",
+    )
+    loc: FloatVectorProperty(
+        name="配置位置 (mm)", default=(0, 0, 0), size=3,
+        description="基礎の角（X-最小, Y-最小）の X, Y, Z 座標 mm",
+    )
+    auto_material: BoolProperty(
+        name="自動マテリアル", default=True,
+        description="コンクリートマテリアルを自動適用",
+    )
+
+    # ── 実行 ─────────────────────────────────────────────────────────
+    def execute(self, context):
+        lx = mm(self.length)
+        ly = mm(self.width)
+        bt = mm(self.base_thickness)
+        sw = mm(self.stem_width)
+        sh = mm(self.stem_height)
+        ox, oy, oz = mm(self.loc[0]), mm(self.loc[1]), mm(self.loc[2])
+
+        if sw * 2 >= lx or sw * 2 >= ly:
+            self.report({'ERROR'},
+                "立ち上がり幅が大きすぎます（内径がゼロ以下になります）")
+            return {'CANCELLED'}
+
+        bm   = self._build_bm(lx, ly, bt, sw, sh)
+        mesh = bpy.data.meshes.new("基礎")
+        bm.to_mesh(mesh)
+        bm.free()
+        mesh.update()
+
+        obj = bpy.data.objects.new("基礎", mesh)
+        obj.location = (ox, oy, oz)
+        link_to_named_collection(obj, "基礎", context)
+
+        if self.auto_material:
+            apply_material(obj, "基礎_コンクリート",
+                           (0.65, 0.65, 0.65, 1.0), "mat_floor_concrete")
+
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+
+        self.report({'INFO'},
+            f"基礎を追加: {self.length}×{self.width}mm "
+            f"底盤t{self.base_thickness}mm / "
+            f"立ち上がり {self.stem_width}×{self.stem_height}mm")
+        return {'FINISHED'}
+
+    # ── ジオメトリ生成 ────────────────────────────────────────────────
+    def _build_bm(self, lx, ly, bt, sw, sh):
+        """凸断面の基礎ジオメトリ（底盤＋外周立ち上がり）を生成"""
+        bm = bmesh.new()
+
+        # 外周 XY (CCW: 左前→右前→右奥→左奥)
+        ox = [0.0,  lx,  lx,  0.0]
+        oy = [0.0, 0.0,  ly,  ly ]
+        # 内周 XY（立ち上がり内側・直角コーナー）
+        ix = [sw,    lx - sw, lx - sw, sw      ]
+        iy = [sw,    sw,      ly - sw, ly - sw ]
+
+        z_bot = -bt  # 底盤下端
+        z_mid =  0.0 # 底盤上端 ＝ 立ち上がり根元（GL）
+        z_top =  sh  # 立ち上がり上端
+
+        bot   = [bm.verts.new((ox[i], oy[i], z_bot)) for i in range(4)]
+        mid_o = [bm.verts.new((ox[i], oy[i], z_mid)) for i in range(4)]
+        mid_i = [bm.verts.new((ix[i], iy[i], z_mid)) for i in range(4)]
+        top_o = [bm.verts.new((ox[i], oy[i], z_top)) for i in range(4)]
+        top_i = [bm.verts.new((ix[i], iy[i], z_top)) for i in range(4)]
+
+        # 底盤 ─ 底面
+        bm.faces.new([bot[0], bot[1], bot[2], bot[3]])
+        # 底盤 ─ 外側4面（鉛直）
+        for i in range(4):
+            ni = (i + 1) % 4
+            bm.faces.new([bot[i], bot[ni], mid_o[ni], mid_o[i]])
+        # 底盤 ─ 上面内側（立ち上がり内側に露出する面）
+        bm.faces.new([mid_i[0], mid_i[1], mid_i[2], mid_i[3]])
+        # 底盤 ─ 上面外縁（立ち上がりが乗る帯状4面・水平）
+        for i in range(4):
+            ni = (i + 1) % 4
+            bm.faces.new([mid_o[i], mid_o[ni], mid_i[ni], mid_i[i]])
+
+        # 立ち上がり ─ 外側4面（直角コーナー・鉛直）
+        for i in range(4):
+            ni = (i + 1) % 4
+            bm.faces.new([mid_o[i], mid_o[ni], top_o[ni], top_o[i]])
+        # 立ち上がり ─ 内側4面（直角コーナー・鉛直）
+        for i in range(4):
+            ni = (i + 1) % 4
+            bm.faces.new([mid_i[ni], mid_i[i], top_i[i], top_i[ni]])
+        # 立ち上がり ─ 天端（帯状4面・水平）
+        for i in range(4):
+            ni = (i + 1) % 4
+            bm.faces.new([top_o[i], top_o[ni], top_i[ni], top_i[i]])
+
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+        return bm
+
+    # ── モーダル配置（床と同パターン） ───────────────────────────────
+    def invoke(self, context, event):
+        self._start   = None
+        self._preview = None
+        snap_hint = "  [SNAP ON]" if context.scene.archicad.snap_enabled else ""
+        context.workspace.status_text_set(
+            f"クリック: 始点を指定  |  ESC: キャンセル{snap_hint}")
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type == 'MOUSEMOVE':
+            if self._start is not None:
+                cur = self._mouse_to_floor(context, event)
+                cur = snap_to_grid(cur, context)
+                self._update_preview(cur)
+                if context.area:
+                    context.area.tag_redraw()
+
+        elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            pos = self._mouse_to_floor(context, event)
+            pos = snap_to_grid(pos, context)
+            if self._start is None:
+                self._start = pos
+                self._create_preview(context)
+                context.workspace.status_text_set(
+                    "クリック: 終点を指定  |  ESC: キャンセル")
+            else:
+                self._remove_preview(context)
+                context.workspace.status_text_set(None)
+
+                start, end = self._start, pos
+                sx = min(start.x, end.x)
+                sy = min(start.y, end.y)
+                self.loc    = (sx * 1000, sy * 1000, start.z * 1000)
+                self.length = abs(end.x - start.x) * 1000
+                self.width  = abs(end.y - start.y) * 1000
+
+                if self.length < 1 or self.width < 1:
+                    self.report({'WARNING'}, "面積が小さすぎます")
+                    return {'CANCELLED'}
+                return self.execute(context)
+
+        elif event.type in {'RIGHTMOUSE', 'ESC'}:
+            self._remove_preview(context)
+            context.workspace.status_text_set(None)
+            return {'CANCELLED'}
+
+        elif event.type in {'UNDO', 'REDO'}:
+            self._remove_preview(context)
+            context.workspace.status_text_set(None)
+            return {'CANCELLED'}
+
+        elif event.type in _NAV_EVENTS:
+            return {'PASS_THROUGH'}
+
+        return {'RUNNING_MODAL'}
+
+    def _mouse_to_floor(self, context, event):
+        region    = context.region
+        rv3d      = context.region_data
+        coord     = (event.mouse_region_x, event.mouse_region_y)
+        origin    = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+        direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+        z = context.scene.cursor.location.z
+        t = (z - origin.z) / direction.z if abs(direction.z) > 1e-6 else 0.0
+        return Vector((origin.x + t * direction.x,
+                       origin.y + t * direction.y, z))
+
+    def _create_preview(self, context):
+        mesh = bpy.data.meshes.new("_foundation_preview")
+        self._preview = bpy.data.objects.new("_foundation_preview", mesh)
+        self._preview.display_type = 'WIRE'
+        context.collection.objects.link(self._preview)
+
+    def _update_preview(self, end):
+        if self._preview is None or self._start is None:
+            return
+        start = self._start
+        dx    = end.x - start.x
+        dy    = end.y - start.y
+        bm = bmesh.new()
+        verts = [
+            bm.verts.new((0,  0,  0)),
+            bm.verts.new((dx, 0,  0)),
+            bm.verts.new((dx, dy, 0)),
+            bm.verts.new((0,  dy, 0)),
+        ]
+        bm.faces.new(verts)
+        try:
+            bm.to_mesh(self._preview.data)
+            bm.free()
+            self._preview.data.update()
+            self._preview.location = start
+        except (ReferenceError, RuntimeError):
+            bm.free()
+            self._preview = None
+
+    def _remove_preview(self, context):
+        if self._preview is not None:
+            try:
+                mesh = self._preview.data
+                bpy.data.objects.remove(self._preview)
+                bpy.data.meshes.remove(mesh)
+            except (ReferenceError, RuntimeError):
+                pass
+            self._preview = None
+
+    def draw(self, context):
+        """F9 オペレーターパネル用（配置後の調整）"""
+        layout = self.layout
+        layout.prop(self, "base_thickness")
+        layout.prop(self, "stem_width")
+        layout.prop(self, "stem_height")
+        layout.prop(self, "auto_material")
+
+
+# ------------------------------------------------------------------ #
 #  グリッド生成（モジュール線）
 # ------------------------------------------------------------------ #
 
@@ -1611,8 +1856,9 @@ class ARCHICAD_PT_main_panel(bpy.types.Panel):
         row_p = box2.row(align=True)
         row_p.operator("archicad.add_pillar",    text="柱",    icon='MESH_CUBE')
         row_p.operator("archicad.place_pillars", text="連続配置", icon='SNAP_ON')
-        box2.operator("archicad.add_wall",   text="壁", icon='MOD_SOLIDIFY')
-        box2.operator("archicad.add_floor",  text="床", icon='MESH_PLANE')
+        box2.operator("archicad.add_wall",        text="壁",   icon='MOD_SOLIDIFY')
+        box2.operator("archicad.add_floor",       text="床",   icon='MESH_PLANE')
+        box2.operator("archicad.add_foundation",  text="基礎", icon='SNAP_FACE')
 
         # 開口部
         box3 = layout.box()
@@ -1680,6 +1926,7 @@ classes = [
     ARCHICAD_OT_place_pillars,
     ARCHICAD_OT_add_wall,
     ARCHICAD_OT_add_floor,
+    ARCHICAD_OT_add_foundation,
     ARCHICAD_OT_add_opening,
     ARCHICAD_OT_place_opening,
     ARCHICAD_OT_add_grid,
