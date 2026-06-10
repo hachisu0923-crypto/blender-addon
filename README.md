@@ -47,6 +47,10 @@ tests/                  # pure-math unit tests + Blender integration test
 3. Set the wavelength range / band count, then **Inject Spectral Nodes →
    Spectral Render → Restore**.
 
+> 📖 操作手順の詳しい日本語ガイドは [`docs/USAGE.md`](docs/USAGE.md) を参照してください
+> (installation, the Inject → Render → Restore workflow, dispersion/metal/volume
+> materials, animation, and troubleshooting).
+
 Build the Extension package with:
 
 ```
