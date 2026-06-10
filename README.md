@@ -10,9 +10,9 @@ rendered band-by-band, and composited in CIE XYZ for physically plausible colour
 
 - **Phase 1 (MVP) — done.** Equal-interval bands, Base Color uplift,
   non-destructive node injection/restore, band-composited rendering.
-- **Phase 2 (in progress).** Dispersion (Cauchy / Abbe → wavelength-driven IOR)
-  and a Planck black-body illuminant are implemented. Metals (complex IOR) and
-  volumes are next.
+- **Phase 2 — done.** Dispersion (Cauchy / Abbe → wavelength-driven IOR), a
+  Planck black-body illuminant, spectral metals (measured complex IOR → Fresnel
+  reflectance via Float Curve) and wavelength-dependent volume absorption.
 - **Phases 3–4** (importance sampling, multilayer EXR, OCIO, packaging) planned.
 
 ## Layout

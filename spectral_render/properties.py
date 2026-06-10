@@ -7,6 +7,7 @@ from bpy.props import (
     BoolProperty,
     EnumProperty,
     FloatProperty,
+    FloatVectorProperty,
     IntProperty,
     PointerProperty,
 )
@@ -33,6 +34,35 @@ class SpectralMaterialSettings(bpy.types.PropertyGroup):
     cauchy_a: FloatProperty(name="Cauchy A", default=1.5046)
     cauchy_b: FloatProperty(name="Cauchy B (µm²)", default=0.0042)
     cauchy_c: FloatProperty(name="Cauchy C (µm⁴)", default=0.0)
+
+    metal_enabled: BoolProperty(
+        name="Spectral Metal",
+        description="Drive Base Color with measured wavelength-dependent metal reflectance "
+                    "(set the Principled Metallic input to 1)",
+        default=False,
+    )
+    metal: EnumProperty(
+        name="Metal",
+        items=[
+            ("gold", "Gold", ""),
+            ("silver", "Silver", ""),
+            ("copper", "Copper", ""),
+            ("aluminium", "Aluminium", ""),
+        ],
+        default="gold",
+    )
+
+    volume_enabled: BoolProperty(
+        name="Spectral Volume",
+        description="Drive Volume Absorption/Scatter density with a wavelength-dependent "
+                    "absorption profile derived from the tint",
+        default=False,
+    )
+    volume_tint: FloatVectorProperty(
+        name="Transmission Tint", subtype="COLOR", size=3,
+        min=0.0, max=1.0, default=(0.5, 0.7, 1.0),
+    )
+    volume_density: FloatProperty(name="Density", default=1.0, min=0.0)
 
 
 class SpectralSettings(bpy.types.PropertyGroup):

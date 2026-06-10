@@ -70,6 +70,21 @@ class VIEW3D_PT_spectral_material(bpy.types.Panel):
             col.prop(ms, "cauchy_b")
             col.prop(ms, "cauchy_c")
 
+        layout.separator()
+        layout.prop(ms, "metal_enabled")
+        col = layout.column()
+        col.enabled = ms.metal_enabled
+        col.prop(ms, "metal")
+        if ms.metal_enabled:
+            col.label(text="Set Principled Metallic = 1", icon="INFO")
+
+        layout.separator()
+        layout.prop(ms, "volume_enabled")
+        col = layout.column()
+        col.enabled = ms.volume_enabled
+        col.prop(ms, "volume_tint")
+        col.prop(ms, "volume_density")
+
 
 _CLASSES = (VIEW3D_PT_spectral, VIEW3D_PT_spectral_material)
 

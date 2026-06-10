@@ -53,8 +53,7 @@ def _socket_default(socket):
         return float(dv)
 
 
-def _record_and_replace(node_tree, socket, new_output, injected_nodes) -> dict:
-    """Record a socket's original state, then rewire it to ``new_output``."""
+def _record(socket, injected_nodes) -> dict:
     rec = {
         "bsdf_node": socket.node.name,
         "socket": socket.identifier,
@@ -68,9 +67,24 @@ def _record_and_replace(node_tree, socket, new_output, injected_nodes) -> dict:
         link = socket.links[0]
         rec["source_node"] = link.from_node.name
         rec["source_socket"] = link.from_socket.identifier
+    return rec
+
+
+def _record_and_replace(node_tree, socket, new_output, injected_nodes) -> dict:
+    """Record a socket's original state, then rewire it to ``new_output``."""
+    rec = _record(socket, injected_nodes)
     for link in list(socket.links):
         node_tree.links.remove(link)
     node_tree.links.new(new_output, socket)
+    return rec
+
+
+def _record_and_set(node_tree, socket, new_value) -> dict:
+    """Record a socket's original state, then set a constant value (no nodes)."""
+    rec = _record(socket, [])
+    for link in list(socket.links):
+        node_tree.links.remove(link)
+    socket.default_value = new_value
     return rec
 
 
@@ -84,15 +98,17 @@ def inject_material(mat, scene) -> str:
     temp = sets.color_temperature
     records = []
 
-    # --- Base Color uplift ------------------------------------------------
+    # --- Base Color: spectral metal reflectance OR RGB uplift -------------
     bsdf = _find_principled(nt)
     if bsdf is not None:
         socket = bsdf.inputs["Base Color"]
-        rgb = tuple(socket.default_value[:3])
-        coeffs = jakob_hanika.rgb_to_coeffs(rgb, sets.illuminant, temp)
-        inst = node_group.build_instance(
-            nt, scene, coeffs, location=(bsdf.location.x - 400, bsdf.location.y)
-        )
+        loc = (bsdf.location.x - 400, bsdf.location.y)
+        if mat.spectral.metal_enabled:
+            inst = node_group.build_metal_instance(nt, scene, mat.spectral.metal, location=loc)
+        else:
+            rgb = tuple(socket.default_value[:3])
+            coeffs = jakob_hanika.rgb_to_coeffs(rgb, sets.illuminant, temp)
+            inst = node_group.build_instance(nt, scene, coeffs, location=loc)
         records.append(_record_and_replace(nt, socket, inst["output_socket"], inst["nodes"]))
 
     # --- Dispersion (IOR) -------------------------------------------------
@@ -108,6 +124,23 @@ def inject_material(mat, scene) -> str:
                 nt, scene, abc, location=(node.location.x - 400, node.location.y - 300)
             )
             records.append(_record_and_replace(nt, ior_in, inst["output_socket"], inst["nodes"]))
+
+    # --- Volume absorption (tinted media) ---------------------------------
+    if mat.spectral.volume_enabled:
+        tint = tuple(mat.spectral.volume_tint)
+        for node in list(nt.nodes):
+            if node.type not in {"VOLUME_ABSORPTION", "VOLUME_SCATTER"}:
+                continue
+            dens = node.inputs.get("Density")
+            col = node.inputs.get("Color")
+            if dens is not None:
+                inst = node_group.build_volume_density_instance(
+                    nt, scene, tint, mat.spectral.volume_density, sets.illuminant, temp,
+                    location=(node.location.x - 400, node.location.y - 200),
+                )
+                records.append(_record_and_replace(nt, dens, inst["output_socket"], inst["nodes"]))
+            if col is not None:
+                records.append(_record_and_set(nt, col, [1.0, 1.0, 1.0, 1.0]))
 
     if not records:
         return "no-target"

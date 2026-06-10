@@ -15,6 +15,9 @@ This is the only ``core`` module that imports ``bpy``.
 from __future__ import annotations
 
 import bpy
+import numpy as np
+
+from . import metals
 
 GROUP_NAME = "SpectralColor"
 IOR_GROUP_NAME = "SpectralIOR"
@@ -248,6 +251,119 @@ def build_ior_instance(node_tree, scene, coeffs, location=(0.0, 0.0)) -> dict:
     links.new(lam.outputs[0], grp.inputs["Lambda"])
 
     return {"nodes": created, "output_socket": grp.outputs["IOR"]}
+
+
+def build_metal_instance(node_tree, scene, metal_name, location=(0.0, 0.0)) -> dict:
+    """Insert a wavelength-driven metal reflectance into ``node_tree``.
+
+    R(λ) (normal-incidence Fresnel from measured n,k) is baked into a Float Curve
+    indexed by the normalised, λ-driven wavelength, then broadcast to grey RGB.
+    The host Principled BSDF should have Metallic = 1.
+    """
+    nodes, links = node_tree.nodes, node_tree.links
+    bx, by = location
+    created = []
+
+    def tag(n):
+        n[INJECT_TAG] = True
+        created.append(n.name)
+        return n
+
+    lam = tag(nodes.new("ShaderNodeValue"))
+    lam.label = "spectral λ"
+    lam.location = (bx - 600, by + 120)
+    add_lambda_driver(lam, scene)
+
+    nrm = tag(nodes.new("ShaderNodeMath"))      # (λ - 360) / 470 -> [0, 1]
+    nrm.operation = "MULTIPLY_ADD"
+    nrm.location = (bx - 420, by + 120)
+    nrm.inputs[1].default_value = 1.0 / 470.0
+    nrm.inputs[2].default_value = -360.0 / 470.0
+    links.new(lam.outputs[0], nrm.inputs[0])
+
+    fc = tag(nodes.new("ShaderNodeFloatCurve"))
+    fc.label = f"R(λ) {metal_name}"
+    fc.location = (bx - 260, by)
+    fc.inputs[0].default_value = 1.0           # Factor = fully curve-mapped
+    links.new(nrm.outputs[0], fc.inputs[1])
+
+    grid = np.arange(380.0, 781.0, 20.0)
+    refl = metals.reflectance(metal_name, grid)
+    xs = (grid - 360.0) / 470.0
+    points = fc.mapping.curves[0].points
+    points[0].location = (float(xs[0]), float(refl[0]))
+    points[1].location = (float(xs[-1]), float(refl[-1]))
+    for x, y in zip(xs[1:-1], refl[1:-1]):
+        points.new(float(x), float(y))
+    fc.mapping.update()
+
+    comb = tag(nodes.new("ShaderNodeCombineColor"))
+    comb.mode = "RGB"
+    comb.location = (bx, by)
+    for ch in range(3):
+        links.new(fc.outputs[0], comb.inputs[ch])
+
+    return {"nodes": created, "output_socket": comb.outputs[0]}
+
+
+def build_volume_density_instance(
+    node_tree, scene, tint_rgb, density, illuminant, temperature, location=(0.0, 0.0)
+) -> dict:
+    """Insert a λ-driven volume absorption density into ``node_tree``.
+
+    The absorption profile is ``a(λ) = 1 - S(λ)`` where ``S`` is the spectral
+    uplift of the tint colour, baked into a Float Curve and scaled by ``density``.
+    High absorption at wavelengths the tint does not reflect -> that colour
+    survives transmission. The host volume node's Color should be white.
+    Returns the density scalar output socket.
+    """
+    from . import jakob_hanika
+
+    nodes, links = node_tree.nodes, node_tree.links
+    bx, by = location
+    created = []
+
+    def tag(n):
+        n[INJECT_TAG] = True
+        created.append(n.name)
+        return n
+
+    lam = tag(nodes.new("ShaderNodeValue"))
+    lam.label = "spectral λ"
+    lam.location = (bx - 640, by + 120)
+    add_lambda_driver(lam, scene)
+
+    nrm = tag(nodes.new("ShaderNodeMath"))
+    nrm.operation = "MULTIPLY_ADD"
+    nrm.location = (bx - 460, by + 120)
+    nrm.inputs[1].default_value = 1.0 / 470.0
+    nrm.inputs[2].default_value = -360.0 / 470.0
+    links.new(lam.outputs[0], nrm.inputs[0])
+
+    coeffs = jakob_hanika.rgb_to_coeffs(tint_rgb, illuminant, temperature)
+    grid = np.arange(380.0, 781.0, 20.0)
+    absorption = np.clip(1.0 - jakob_hanika.reflectance(coeffs, grid), 0.0, 1.0)
+    xs = (grid - 360.0) / 470.0
+
+    fc = tag(nodes.new("ShaderNodeFloatCurve"))
+    fc.label = "absorption(λ)"
+    fc.location = (bx - 300, by)
+    fc.inputs[0].default_value = 1.0
+    links.new(nrm.outputs[0], fc.inputs[1])
+    points = fc.mapping.curves[0].points
+    points[0].location = (float(xs[0]), float(absorption[0]))
+    points[1].location = (float(xs[-1]), float(absorption[-1]))
+    for x, y in zip(xs[1:-1], absorption[1:-1]):
+        points.new(float(x), float(y))
+    fc.mapping.update()
+
+    scale = tag(nodes.new("ShaderNodeMath"))    # density * a(λ)
+    scale.operation = "MULTIPLY"
+    scale.location = (bx - 100, by)
+    scale.inputs[1].default_value = float(density)
+    links.new(fc.outputs[0], scale.inputs[0])
+
+    return {"nodes": created, "output_socket": scale.outputs[0]}
 
 
 def cleanup_groups_if_unused() -> None:
