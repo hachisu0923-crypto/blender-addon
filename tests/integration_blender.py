@@ -59,6 +59,24 @@ def build_scene():
     gobj.data.materials.append(gmat)
     build_scene.glass = gmat
 
+    # Textured material (Phase 5): Base Color driven by an image texture.
+    bpy.ops.mesh.primitive_plane_add(location=(-2.5, 0, 0))
+    tobj = bpy.context.active_object
+    timg = bpy.data.images.new("Albedo", 8, 8)
+    px = []
+    for y in range(8):
+        for x in range(8):
+            px += [x / 7.0, y / 7.0, 0.5, 1.0]   # spatially varying gradient
+    timg.pixels = px
+    tmat = bpy.data.materials.new("Textured")
+    tmat.use_nodes = True
+    tbsdf = next(n for n in tmat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    texnode = tmat.node_tree.nodes.new("ShaderNodeTexImage")
+    texnode.image = timg
+    tmat.node_tree.links.new(texnode.outputs["Color"], tbsdf.inputs["Base Color"])
+    tobj.data.materials.append(tmat)
+    build_scene.textured = tmat
+
     # Light + camera.
     light = bpy.data.lights.new("L", "AREA")
     light.energy = 1000
@@ -96,6 +114,14 @@ def main():
     gbsdf = next(n for n in glass.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
     check(gbsdf.inputs["IOR"].is_linked, "glass IOR is now driven (dispersion)")
 
+    # Texture uplift: Base Color driven, original albedo texture detached,
+    # a per-texel coefficient image created (pattern preserved).
+    tmat = build_scene.textured
+    tbsdf = next(n for n in tmat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    src = tbsdf.inputs["Base Color"].links[0].from_node if tbsdf.inputs["Base Color"].is_linked else None
+    check(src is not None and src.type != "TEX_IMAGE", "albedo texture replaced by spectral chain")
+    check(bpy.data.images.get(f"spectral_coeff_{tmat.name}") is not None, "coefficient map image created")
+
     # --- Idempotency ----------------------------------------------------
     n_injected = len(mat.node_tree.nodes)
     bpy.ops.spectral.inject()
@@ -126,6 +152,12 @@ def main():
     gbsdf = next(n for n in build_scene.glass.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
     check(not gbsdf.inputs["IOR"].is_linked, "glass IOR link removed after restore")
     check(abs(gbsdf.inputs["IOR"].default_value - 1.45) < 1e-4, "glass IOR value restored")
+
+    tmat = build_scene.textured
+    tbsdf = next(n for n in tmat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    rsrc = tbsdf.inputs["Base Color"].links[0].from_node if tbsdf.inputs["Base Color"].is_linked else None
+    check(rsrc is not None and rsrc.type == "TEX_IMAGE", "albedo texture relinked after restore")
+    check(bpy.data.images.get(f"spectral_coeff_{tmat.name}") is None, "coefficient map removed after restore")
 
     print(f"\n{len(_FAILS)} failure(s)")
     sys.exit(1 if _FAILS else 0)

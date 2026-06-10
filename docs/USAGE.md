@@ -81,6 +81,8 @@ Cycles を疑似スペクトルレンダラーとして動かす Blender アド�
 | **Illuminant** | D65 | 光源スペクトル。`D65`（昼光）/ `Equal Energy` / `Black Body`（色温度指定） |
 | **Temperature (K)** | 6500 | Black Body 選択時のみ表示。色温度 |
 | **Sampling** | Uniform | `Uniform`（等間隔）/ `Importance`（XYZ寄与で重要度サンプリング＝少バンドで同等品質） |
+| **Uplift Textures** | ON | Base Color の画像テクスチャを**柄を保ったまま**テクセル単位でスペクトル化（下記4‑0）。OFF にすると定数色のみ |
+| **Coeff Map Max Res** | 0 | 係数マップ解像度の上限（0＝元テクスチャと同じ）。4K 等で省メモリにしたいとき設定 |
 | **Target** | Selected Objects | `Selected Objects`（選択物）/ `All Materials`（全マテリアル） |
 | **Save Band EXRs** | OFF | 各バンドをシーンリニア EXR として保存（後段の再グレーディング用） |
 | **EXR Folder** | `//spectral_bands/` | 上を ON にしたときの保存先 |
@@ -101,7 +103,17 @@ Cycles を疑似スペクトルレンダラーとして動かす Blender アド�
 （アクティブオブジェクトのアクティブマテリアルに対して設定）。
 
 設定後に **`Inject Spectral Nodes`** を押すと反映されます。優先順位は
-**Spectrum Override > Spectral Metal > 通常のRGBアップリフト** です。
+**Spectrum Override > Spectral Metal > テクスチャ・アップリフト > 定数RGBアップリフト** です。
+
+### 4-0. テクスチャ・アップリフト（木目・布などの柄を保持）
+- Spectral パネルの **Uplift Textures** が ON のとき、Base Color に**画像テクスチャが直結**
+  （または Mapping/UV 経由）しているマテリアルは、Inject 時に**テクセルごとに係数 (c0,c1,c2) を
+  焼いた係数マップ画像**（`spectral_coeff_<マテリアル名>`）を自動生成し、元と同じ UV でサンプリング
+  してスペクトル化します。**木目・布・タイルの柄を保ったまま**各バンドで反射率が出ます。
+- 係数マップは Restore 時に自動削除されます（非破壊）。
+- ColorRamp / Mix など**手続き型・複雑ノード**の Base Color は対象外で、従来どおり**定数色**に
+  フォールバックします（必要なら一度テクスチャにベイクしてから使用）。
+- 大きなテクスチャでメモリが気になる場合は **Coeff Map Max Res** で上限を設定（例 2048）。
 
 ### 4-1. Spectrum Override（任意の反射スペクトル）
 - **Spectrum Override** を ON にし、**Spectrum CSV** に CSV ファイルを指定。

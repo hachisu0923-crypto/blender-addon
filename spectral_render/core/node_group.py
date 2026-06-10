@@ -367,6 +367,89 @@ def build_volume_density_instance(
     return {"nodes": created, "output_socket": scale.outputs[0]}
 
 
+def make_coeff_image(name, src_image, illuminant, temperature, max_res=0):
+    """Bake a per-texel (c0,c1,c2) coefficient image from an albedo texture.
+
+    Returns a new 32-bit float, Non-Color image the same size as ``src_image``
+    (optionally capped to ``max_res``). The shader samples this and feeds the
+    SpectralColor group, preserving the texture's spatial detail.
+    """
+    from . import cmf, jakob_hanika
+
+    w, h = src_image.size
+    buf = np.empty(w * h * 4, dtype=np.float32)
+    src_image.pixels.foreach_get(buf)
+    rgb = buf.reshape(h, w, 4)[:, :, :3].astype(np.float64)
+
+    # image.pixels are raw buffer values; linearise sRGB-stored albedo.
+    if src_image.colorspace_settings.name in {"sRGB", "Filmic sRGB"}:
+        rgb = cmf.srgb_to_linear(rgb)
+
+    if max_res and max(w, h) > max_res:
+        scale = max_res / max(w, h)
+        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+        ys = np.linspace(0, h - 1, nh).astype(np.intp)
+        xs = np.linspace(0, w - 1, nw).astype(np.intp)
+        rgb = rgb[np.ix_(ys, xs)]
+        w, h = nw, nh
+
+    coeffs = jakob_hanika.rgb_array_to_coeffs(rgb, illuminant, temperature)
+    out = np.ones((h, w, 4), dtype=np.float32)
+    out[:, :, :3] = coeffs
+    img = bpy.data.images.new(name, w, h, float_buffer=True)
+    img.colorspace_settings.name = "Non-Color"
+    img.pixels.foreach_set(out.ravel())
+    img.update()
+    return img
+
+
+def build_texture_instance(node_tree, scene, coeff_image, src_tex_node, location=(0.0, 0.0)) -> dict:
+    """Insert a per-texel spectral uplift driven by a coefficient image.
+
+    coeff Image Texture (Non-Color, same UV/mapping as ``src_tex_node``) ->
+    Separate Color -> SpectralColor group (c0/c1/c2 + driven λ) -> grey RGB.
+    """
+    nodes, links = node_tree.nodes, node_tree.links
+    bx, by = location
+    created = []
+
+    def tag(n):
+        n[INJECT_TAG] = True
+        created.append(n.name)
+        return n
+
+    tex = tag(nodes.new("ShaderNodeTexImage"))
+    tex.image = coeff_image
+    tex.interpolation = src_tex_node.interpolation
+    tex.extension = src_tex_node.extension
+    tex.projection = src_tex_node.projection
+    tex.location = (bx - 700, by)
+    vsrc = src_tex_node.inputs.get("Vector")
+    if vsrc is not None and vsrc.is_linked:
+        links.new(vsrc.links[0].from_socket, tex.inputs["Vector"])
+
+    sep = tag(nodes.new("ShaderNodeSeparateColor"))
+    sep.mode = "RGB"
+    sep.location = (bx - 480, by)
+    links.new(tex.outputs["Color"], sep.inputs[0])
+
+    grp = tag(nodes.new("ShaderNodeGroup"))
+    grp.node_tree = get_or_create_group()
+    grp.label = "Spectral Color (tex)"
+    grp.location = (bx - 260, by)
+    for i, key in enumerate(("c0", "c1", "c2")):
+        links.new(sep.outputs[i], grp.inputs[key])
+
+    lam = tag(nodes.new("ShaderNodeValue"))
+    lam.label = "spectral λ"
+    lam.location = (bx - 260, by + 160)
+    add_lambda_driver(lam, scene)
+    links.new(lam.outputs[0], grp.inputs["Lambda"])
+
+    out = _grey_combine(nodes, links, grp.outputs["Reflectance"], bx, by, tag)
+    return {"nodes": created, "output_socket": out, "image_name": coeff_image.name}
+
+
 def cleanup_groups_if_unused() -> None:
     """Remove the shared group datablocks once nothing references them."""
     for name in (GROUP_NAME, IOR_GROUP_NAME):

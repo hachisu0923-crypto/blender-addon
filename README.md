@@ -20,8 +20,13 @@ rendered band-by-band, and composited in CIE XYZ for physically plausible colour
   presets, animation render (per-frame composite, with the uplift coefficient
   cache avoiding recomputation), progress/ETA logging, and Extension packaging.
 
+- **Extension — texture spectral uplift.** Image-texture Base Color is now
+  uplifted per texel via a baked coefficient map (sampled in-shader, fed to the
+  SpectralColor group), so wood/fabric/tile patterns survive spectralisation
+  instead of flattening. Toggle: **Uplift Textures**.
+
 All four phases of `spectral_addon_spec.md` are implemented. The pure-maths core
-has 37 passing unit tests; the bpy-bound operators/UI are exercised by the
+has 41 passing unit tests; the bpy-bound operators/UI are exercised by the
 Blender integration test.
 
 ## Layout

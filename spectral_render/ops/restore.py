@@ -29,6 +29,12 @@ def _restore_record(nt, rec) -> None:
         if n is not None:
             nt.nodes.remove(n)
 
+    # Delete any baked coefficient images we created (once unreferenced).
+    for iname in rec.get("injected_images", []):
+        img = bpy.data.images.get(iname)
+        if img is not None and img.users == 0:
+            bpy.data.images.remove(img)
+
     # Restore the original connection / value.
     if socket is not None:
         restored_link = False

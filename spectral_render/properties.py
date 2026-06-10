@@ -142,6 +142,17 @@ class SpectralSettings(bpy.types.PropertyGroup):
         ],
         default="UNIFORM",
     )
+    texture_spectral: BoolProperty(
+        name="Uplift Textures",
+        description="Spectralise image-texture Base Color per texel (keeps the pattern). "
+                    "Procedural/complex Base Color falls back to a constant uplift",
+        default=True,
+    )
+    coeff_max_res: IntProperty(
+        name="Coeff Map Max Res",
+        description="Cap the coefficient map resolution (0 = match source texture)",
+        default=0, min=0, max=8192,
+    )
     save_band_exrs: BoolProperty(
         name="Save Band EXRs",
         description="Write each band as a scene-linear EXR for post regrading",
