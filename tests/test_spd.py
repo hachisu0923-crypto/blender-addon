@@ -20,6 +20,22 @@ def test_unknown_illuminant_raises():
     raise AssertionError("expected ValueError for unknown illuminant")
 
 
+def test_blackbody_positive_and_wien_shift():
+    # Planck radiance is positive, and a hotter body peaks at a shorter
+    # wavelength (Wien's law): the 470/650 nm ratio rises with temperature.
+    grid = np.array([470.0, 650.0])
+    cool = spd.spd_array(grid, "BLACKBODY", 3000.0)
+    hot = spd.spd_array(grid, "BLACKBODY", 9000.0)
+    assert np.all(cool > 0.0) and np.all(hot > 0.0)
+    assert (hot[0] / hot[1]) > (cool[0] / cool[1])
+
+
+def test_blackbody_white_point_is_usable():
+    wl = np.arange(385.0, 730.0, (730.0 - 380.0) / 16.0)
+    y = spd.y_integral("BLACKBODY", wl, (730.0 - 380.0) / 16.0, 6500.0)
+    assert y > 0.0
+
+
 def test_y_integral_positive_and_stable():
     # The white-point divisor should be positive and only weakly dependent on
     # the band count (coarse vs fine sampling differ by a few percent at most).

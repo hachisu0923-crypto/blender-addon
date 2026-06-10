@@ -22,6 +22,8 @@ class VIEW3D_PT_spectral(bpy.types.Panel):
         col.prop(s, "samples_per_band")
 
         layout.prop(s, "illuminant")
+        if s.illuminant == "BLACKBODY":
+            layout.prop(s, "color_temperature")
         layout.prop(s, "target")
 
         col = layout.column(align=True)
@@ -37,9 +39,46 @@ class VIEW3D_PT_spectral(bpy.types.Panel):
                 box.label(text=f"Δλ: {(s.lambda_max - s.lambda_min) / s.band_count:.1f} nm")
 
 
+class VIEW3D_PT_spectral_material(bpy.types.Panel):
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Spectral"
+    bl_label = "Material Dispersion"
+    bl_parent_id = "VIEW3D_PT_spectral"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        return obj is not None and obj.active_material is not None
+
+    def draw(self, context):
+        layout = self.layout
+        mat = context.object.active_material
+        ms = mat.spectral
+        layout.label(text=mat.name, icon="MATERIAL")
+        layout.prop(ms, "dispersion_enabled")
+
+        col = layout.column()
+        col.enabled = ms.dispersion_enabled
+        col.prop(ms, "dispersion_mode")
+        if ms.dispersion_mode == "ABBE":
+            col.prop(ms, "ior_d")
+            col.prop(ms, "abbe")
+        else:
+            col.prop(ms, "cauchy_a")
+            col.prop(ms, "cauchy_b")
+            col.prop(ms, "cauchy_c")
+
+
+_CLASSES = (VIEW3D_PT_spectral, VIEW3D_PT_spectral_material)
+
+
 def register():
-    bpy.utils.register_class(VIEW3D_PT_spectral)
+    for cls in _CLASSES:
+        bpy.utils.register_class(cls)
 
 
 def unregister():
-    bpy.utils.unregister_class(VIEW3D_PT_spectral)
+    for cls in reversed(_CLASSES):
+        bpy.utils.unregister_class(cls)

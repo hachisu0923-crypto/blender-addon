@@ -26,18 +26,19 @@ _LAM_HAT = (_GRID - 360.0) / 470.0
 
 # Cache of per-illuminant weight matrices W (N, 3) such that
 #   XYZ_normalised = S @ W      (already divided by the illuminant's Y integral).
-_WEIGHTS: dict[str, np.ndarray] = {}
+_WEIGHTS: dict[tuple[str, float], np.ndarray] = {}
 
 
-def _weights(illuminant: str) -> np.ndarray:
-    W = _WEIGHTS.get(illuminant)
+def _weights(illuminant: str, temperature: float = 6500.0) -> np.ndarray:
+    key = (illuminant, temperature)
+    W = _WEIGHTS.get(key)
     if W is None:
-        spd_w = spd.spd_array(_GRID, illuminant)        # (N,)
-        cmfs = cmf.cmf_array(_GRID)                      # (N, 3)
-        W = spd_w[:, None] * cmfs * _DLAM               # (N, 3)
+        spd_w = spd.spd_array(_GRID, illuminant, temperature)   # (N,)
+        cmfs = cmf.cmf_array(_GRID)                              # (N, 3)
+        W = spd_w[:, None] * cmfs * _DLAM                       # (N, 3)
         y_white = float(np.sum(spd_w * cmfs[:, 1] * _DLAM))
         W = W / y_white
-        _WEIGHTS[illuminant] = W
+        _WEIGHTS[key] = W
     return W
 
 
@@ -105,17 +106,17 @@ def _fit(target: np.ndarray, W: np.ndarray) -> np.ndarray:
 
 
 @functools.lru_cache(maxsize=8192)
-def _cached(rgb_key: tuple[float, float, float], illuminant: str) -> tuple[float, float, float]:
+def _cached(rgb_key, illuminant: str, temperature: float) -> tuple[float, float, float]:
     target = np.clip(np.asarray(rgb_key, dtype=np.float64), 1e-4, 1.0 - 1e-4)
-    c = _fit(target, _weights(illuminant))
+    c = _fit(target, _weights(illuminant, temperature))
     return (float(c[0]), float(c[1]), float(c[2]))
 
 
-def rgb_to_coeffs(rgb, illuminant: str = "D65") -> tuple[float, float, float]:
+def rgb_to_coeffs(rgb, illuminant: str = "D65", temperature: float = 6500.0) -> tuple[float, float, float]:
     """Fit sigmoid-polynomial coefficients ``(c0, c1, c2)`` for a linear-sRGB colour.
 
     ``rgb`` components are linear sRGB in [0, 1]. Results are memoised on the
     rounded colour so re-injecting many identically coloured materials is cheap.
     """
     key = (round(float(rgb[0]), 5), round(float(rgb[1]), 5), round(float(rgb[2]), 5))
-    return _cached(key, illuminant)
+    return _cached(key, illuminant, float(temperature))

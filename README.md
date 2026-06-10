@@ -8,10 +8,12 @@ rendered band-by-band, and composited in CIE XYZ for physically plausible colour
 
 ## Status
 
-**Phase 1 (MVP) implemented.** Equal-interval bands, Base Color uplift,
-non-destructive node injection/restore, and band-composited rendering.
-Phases 2–4 (dispersion, light SPD presets, metals, importance sampling,
-multilayer EXR, OCIO, packaging) are planned next.
+- **Phase 1 (MVP) — done.** Equal-interval bands, Base Color uplift,
+  non-destructive node injection/restore, band-composited rendering.
+- **Phase 2 (in progress).** Dispersion (Cauchy / Abbe → wavelength-driven IOR)
+  and a Planck black-body illuminant are implemented. Metals (complex IOR) and
+  volumes are next.
+- **Phases 3–4** (importance sampling, multilayer EXR, OCIO, packaging) planned.
 
 ## Layout
 

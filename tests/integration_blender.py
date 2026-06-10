@@ -47,6 +47,18 @@ def build_scene():
     bsdf.inputs["Base Color"].default_value = (0.5, 0.5, 0.5, 1.0)
     obj.data.materials.append(mat)
 
+    # Glass sphere with dispersion enabled (Phase 2).
+    bpy.ops.mesh.primitive_uv_sphere_add(location=(2.5, 0, 0))
+    gobj = bpy.context.active_object
+    gmat = bpy.data.materials.new("Glass")
+    gmat.use_nodes = True
+    gbsdf = next(n for n in gmat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    gbsdf.inputs["IOR"].default_value = 1.45
+    gmat.spectral.dispersion_enabled = True
+    gmat.spectral.dispersion_mode = "ABBE"
+    gobj.data.materials.append(gmat)
+    build_scene.glass = gmat
+
     # Light + camera.
     light = bpy.data.lights.new("L", "AREA")
     light.energy = 1000
@@ -79,6 +91,11 @@ def main():
     bsdf = next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
     check(bsdf.inputs["Base Color"].is_linked, "Base Color is now driven")
 
+    # Dispersion: the glass IOR should now be wavelength-driven.
+    glass = build_scene.glass
+    gbsdf = next(n for n in glass.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    check(gbsdf.inputs["IOR"].is_linked, "glass IOR is now driven (dispersion)")
+
     # --- Idempotency ----------------------------------------------------
     n_injected = len(mat.node_tree.nodes)
     bpy.ops.spectral.inject()
@@ -106,6 +123,9 @@ def main():
     bsdf = next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
     bc = bsdf.inputs["Base Color"].default_value
     check(abs(bc[0] - 0.5) < 1e-4, "Base Color value restored")
+    gbsdf = next(n for n in build_scene.glass.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    check(not gbsdf.inputs["IOR"].is_linked, "glass IOR link removed after restore")
+    check(abs(gbsdf.inputs["IOR"].default_value - 1.45) < 1e-4, "glass IOR value restored")
 
     print(f"\n{len(_FAILS)} failure(s)")
     sys.exit(1 if _FAILS else 0)

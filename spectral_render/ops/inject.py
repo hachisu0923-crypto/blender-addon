@@ -1,4 +1,4 @@
-"""Non-destructive injection of SpectralColor nodes into materials."""
+"""Non-destructive injection of SpectralColor / SpectralIOR nodes."""
 
 from __future__ import annotations
 
@@ -10,6 +10,9 @@ from .. import properties
 from ..core import jakob_hanika, node_group
 
 BACKUP_KEY = "_spectral_backup"
+
+# Node types whose IOR input we drive for dispersion.
+_IOR_NODE_TYPES = {"BSDF_GLASS", "BSDF_REFRACTION", "BSDF_PRINCIPLED"}
 
 
 def iter_target_materials(context):
@@ -42,66 +45,93 @@ def _find_principled(node_tree):
     return None
 
 
+def _socket_default(socket):
+    dv = socket.default_value
+    try:
+        return list(dv)
+    except TypeError:
+        return float(dv)
+
+
+def _record_and_replace(node_tree, socket, new_output, injected_nodes) -> dict:
+    """Record a socket's original state, then rewire it to ``new_output``."""
+    rec = {
+        "bsdf_node": socket.node.name,
+        "socket": socket.identifier,
+        "linked": socket.is_linked,
+        "source_node": None,
+        "source_socket": None,
+        "default_value": _socket_default(socket),
+        "injected_nodes": injected_nodes,
+    }
+    if socket.is_linked:
+        link = socket.links[0]
+        rec["source_node"] = link.from_node.name
+        rec["source_socket"] = link.from_socket.identifier
+    for link in list(socket.links):
+        node_tree.links.remove(link)
+    node_tree.links.new(new_output, socket)
+    return rec
+
+
 def inject_material(mat, scene) -> str:
-    """Inject one material. Returns 'injected', 'skipped' or 'no-bsdf'."""
+    """Inject one material. Returns 'injected', 'skipped' or 'no-target'."""
     if BACKUP_KEY in mat.keys():
         return "skipped"                     # idempotent: already injected
 
     nt = mat.node_tree
+    sets = scene.spectral
+    temp = sets.color_temperature
+    records = []
+
+    # --- Base Color uplift ------------------------------------------------
     bsdf = _find_principled(nt)
-    if bsdf is None:
-        return "no-bsdf"
-    socket = bsdf.inputs["Base Color"]
+    if bsdf is not None:
+        socket = bsdf.inputs["Base Color"]
+        rgb = tuple(socket.default_value[:3])
+        coeffs = jakob_hanika.rgb_to_coeffs(rgb, sets.illuminant, temp)
+        inst = node_group.build_instance(
+            nt, scene, coeffs, location=(bsdf.location.x - 400, bsdf.location.y)
+        )
+        records.append(_record_and_replace(nt, socket, inst["output_socket"], inst["nodes"]))
 
-    backup = {
-        "version": 1,
-        "bsdf_node": bsdf.name,
-        "socket": "Base Color",
-        "linked": socket.is_linked,
-        "source_node": None,
-        "source_socket": None,
-        "default_value": list(socket.default_value),
-        "injected_nodes": [],
-    }
-    if socket.is_linked:
-        link = socket.links[0]
-        backup["source_node"] = link.from_node.name
-        backup["source_socket"] = link.from_socket.identifier
+    # --- Dispersion (IOR) -------------------------------------------------
+    if mat.spectral.dispersion_enabled:
+        abc = properties.dispersion_coeffs(mat.spectral)
+        for node in list(nt.nodes):
+            if node.type not in _IOR_NODE_TYPES:
+                continue
+            ior_in = node.inputs.get("IOR")
+            if ior_in is None:
+                continue
+            inst = node_group.build_ior_instance(
+                nt, scene, abc, location=(node.location.x - 400, node.location.y - 300)
+            )
+            records.append(_record_and_replace(nt, ior_in, inst["output_socket"], inst["nodes"]))
 
-    # Fit the constant Base Color (linear sRGB). Linked textures fall back to the
-    # socket default in Phase 1 (only the constant colour is uplifted).
-    rgb = tuple(socket.default_value[:3])
-    coeffs = jakob_hanika.rgb_to_coeffs(rgb, scene.spectral.illuminant)
+    if not records:
+        return "no-target"
 
-    inst = node_group.build_instance(
-        nt, scene, coeffs, location=(bsdf.location.x - 400, bsdf.location.y)
-    )
-    backup["injected_nodes"] = inst["nodes"]
-
-    for link in list(socket.links):
-        nt.links.remove(link)
-    nt.links.new(inst["output_socket"], socket)
-
-    mat[BACKUP_KEY] = json.dumps(backup)
+    mat[BACKUP_KEY] = json.dumps({"version": 2, "sockets": records})
     return "injected"
 
 
 class SPECTRAL_OT_inject(bpy.types.Operator):
     bl_idname = "spectral.inject"
     bl_label = "Inject Spectral Nodes"
-    bl_description = "Replace Base Color with a wavelength-driven SpectralColor node (non-destructive)"
+    bl_description = "Replace Base Color (and dispersion IOR) with wavelength-driven nodes"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         scene = context.scene
         properties.ensure_spectral_lambda(scene)
-        counts = {"injected": 0, "skipped": 0, "no-bsdf": 0}
+        counts = {"injected": 0, "skipped": 0, "no-target": 0}
         for mat in iter_target_materials(context):
             counts[inject_material(mat, scene)] += 1
         self.report(
             {"INFO"},
             f"Spectral: injected {counts['injected']}, skipped {counts['skipped']}, "
-            f"no Principled BSDF {counts['no-bsdf']}",
+            f"no target {counts['no-target']}",
         )
         return {"FINISHED"}
 

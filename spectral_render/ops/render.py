@@ -64,7 +64,8 @@ class SPECTRAL_OT_render(bpy.types.Operator):
         properties.ensure_spectral_lambda(scene)
 
         wavelengths, dlam = properties.band_wavelengths(settings)
-        white = spd.reference_white_xyz(settings.illuminant, wavelengths, dlam)
+        temp = settings.color_temperature
+        white = spd.reference_white_xyz(settings.illuminant, wavelengths, dlam, temp)
         if white[1] <= 0.0:
             self.report({"ERROR"}, "Illuminant Y integral is zero; check λ range")
             return {"CANCELLED"}
@@ -102,7 +103,7 @@ class SPECTRAL_OT_render(bpy.types.Operator):
                 )
                 if xyz_accum is None:
                     xyz_accum = np.zeros((grey.shape[0], 3), dtype=np.float64)
-                weight = cmf.cmf_at(lam) * spd.spd_at(lam, settings.illuminant) * dlam
+                weight = cmf.cmf_at(lam) * spd.spd_at(lam, settings.illuminant, temp) * dlam
                 xyz_accum += grey[:, None] * weight[None, :]
                 wm.progress_update(i + 1)
 
