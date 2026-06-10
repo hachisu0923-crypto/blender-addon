@@ -16,7 +16,13 @@ rendered band-by-band, and composited in CIE XYZ for physically plausible colour
 - **Phase 3 — done.** Stratified XYZ-importance wavelength sampling (unbiased,
   fewer bands for the same noise), per-band scene-linear EXR output, and an
   OCIO-consistent linear result (view transform applies on display).
-- **Phase 4** (per-object overrides, presets, animation cache, packaging) planned.
+- **Phase 4 — done.** Per-material reflectance-spectrum override (CSV), glass
+  presets, animation render (per-frame composite, with the uplift coefficient
+  cache avoiding recomputation), progress/ETA logging, and Extension packaging.
+
+All four phases of `spectral_addon_spec.md` are implemented. The pure-maths core
+has 37 passing unit tests; the bpy-bound operators/UI are exercised by the
+Blender integration test.
 
 ## Layout
 

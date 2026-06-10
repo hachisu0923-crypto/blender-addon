@@ -7,7 +7,7 @@ import json
 import bpy
 
 from .. import properties
-from ..core import jakob_hanika, node_group
+from ..core import jakob_hanika, node_group, spectrum
 
 BACKUP_KEY = "_spectral_backup"
 
@@ -98,14 +98,25 @@ def inject_material(mat, scene) -> str:
     temp = sets.color_temperature
     records = []
 
-    # --- Base Color: spectral metal reflectance OR RGB uplift -------------
+    # --- Base Color: spectrum override > metal > RGB uplift ---------------
     bsdf = _find_principled(nt)
     if bsdf is not None:
         socket = bsdf.inputs["Base Color"]
         loc = (bsdf.location.x - 400, bsdf.location.y)
-        if mat.spectral.metal_enabled:
-            inst = node_group.build_metal_instance(nt, scene, mat.spectral.metal, location=loc)
-        else:
+        ms = mat.spectral
+        inst = None
+        if ms.override_enabled and ms.override_csv:
+            try:
+                path = bpy.path.abspath(ms.override_csv)
+                grid = list(range(380, 781, 10))
+                refl = spectrum.reflectance_at(path, grid)
+                inst = node_group.build_spectrum_instance(nt, scene, grid, refl, location=loc)
+            except Exception as exc:                       # bad/missing CSV -> fall back
+                inst = None
+                print(f"[spectral] override CSV failed for {mat.name}: {exc}")
+        if inst is None and ms.metal_enabled:
+            inst = node_group.build_metal_instance(nt, scene, ms.metal, location=loc)
+        if inst is None:
             rgb = tuple(socket.default_value[:3])
             coeffs = jakob_hanika.rgb_to_coeffs(rgb, sets.illuminant, temp)
             inst = node_group.build_instance(nt, scene, coeffs, location=loc)

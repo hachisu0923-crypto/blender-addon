@@ -253,13 +253,52 @@ def build_ior_instance(node_tree, scene, coeffs, location=(0.0, 0.0)) -> dict:
     return {"nodes": created, "output_socket": grp.outputs["IOR"]}
 
 
-def build_metal_instance(node_tree, scene, metal_name, location=(0.0, 0.0)) -> dict:
-    """Insert a wavelength-driven metal reflectance into ``node_tree``.
+def _driven_lambda_norm(nodes, links, scene, bx, by, tag):
+    """Driven λ Value -> normalised (λ-360)/470. Returns the normalised socket."""
+    lam = tag(nodes.new("ShaderNodeValue"))
+    lam.label = "spectral λ"
+    lam.location = (bx - 640, by + 120)
+    add_lambda_driver(lam, scene)
 
-    R(λ) (normal-incidence Fresnel from measured n,k) is baked into a Float Curve
-    indexed by the normalised, λ-driven wavelength, then broadcast to grey RGB.
-    The host Principled BSDF should have Metallic = 1.
-    """
+    nrm = tag(nodes.new("ShaderNodeMath"))
+    nrm.operation = "MULTIPLY_ADD"
+    nrm.location = (bx - 460, by + 120)
+    nrm.inputs[1].default_value = 1.0 / 470.0
+    nrm.inputs[2].default_value = -360.0 / 470.0
+    links.new(lam.outputs[0], nrm.inputs[0])
+    return nrm.outputs[0]
+
+
+def _float_curve(nodes, links, norm_socket, lam_grid, values, label, bx, by, tag):
+    """Build a Float Curve mapping normalised λ -> values (clamped to [0,1])."""
+    fc = tag(nodes.new("ShaderNodeFloatCurve"))
+    fc.label = label
+    fc.location = (bx - 300, by)
+    fc.inputs[0].default_value = 1.0           # Factor = fully curve-mapped
+    links.new(norm_socket, fc.inputs[1])
+
+    xs = (np.asarray(lam_grid, dtype=np.float64) - 360.0) / 470.0
+    ys = np.clip(np.asarray(values, dtype=np.float64), 0.0, 1.0)
+    points = fc.mapping.curves[0].points
+    points[0].location = (float(xs[0]), float(ys[0]))
+    points[1].location = (float(xs[-1]), float(ys[-1]))
+    for x, y in zip(xs[1:-1], ys[1:-1]):
+        points.new(float(x), float(y))
+    fc.mapping.update()
+    return fc.outputs[0]
+
+
+def _grey_combine(nodes, links, scalar_socket, bx, by, tag):
+    comb = tag(nodes.new("ShaderNodeCombineColor"))
+    comb.mode = "RGB"
+    comb.location = (bx, by)
+    for ch in range(3):
+        links.new(scalar_socket, comb.inputs[ch])
+    return comb.outputs[0]
+
+
+def _curve_instance(node_tree, scene, lam_grid, values, label, location):
+    """Driven λ -> Float Curve -> grey RGB. Shared by metal/spectrum builders."""
     nodes, links = node_tree.nodes, node_tree.links
     bx, by = location
     created = []
@@ -269,41 +308,25 @@ def build_metal_instance(node_tree, scene, metal_name, location=(0.0, 0.0)) -> d
         created.append(n.name)
         return n
 
-    lam = tag(nodes.new("ShaderNodeValue"))
-    lam.label = "spectral λ"
-    lam.location = (bx - 600, by + 120)
-    add_lambda_driver(lam, scene)
+    norm = _driven_lambda_norm(nodes, links, scene, bx, by, tag)
+    curve = _float_curve(nodes, links, norm, lam_grid, values, label, bx, by, tag)
+    out = _grey_combine(nodes, links, curve, bx, by, tag)
+    return {"nodes": created, "output_socket": out}
 
-    nrm = tag(nodes.new("ShaderNodeMath"))      # (λ - 360) / 470 -> [0, 1]
-    nrm.operation = "MULTIPLY_ADD"
-    nrm.location = (bx - 420, by + 120)
-    nrm.inputs[1].default_value = 1.0 / 470.0
-    nrm.inputs[2].default_value = -360.0 / 470.0
-    links.new(lam.outputs[0], nrm.inputs[0])
 
-    fc = tag(nodes.new("ShaderNodeFloatCurve"))
-    fc.label = f"R(λ) {metal_name}"
-    fc.location = (bx - 260, by)
-    fc.inputs[0].default_value = 1.0           # Factor = fully curve-mapped
-    links.new(nrm.outputs[0], fc.inputs[1])
+def build_metal_instance(node_tree, scene, metal_name, location=(0.0, 0.0)) -> dict:
+    """Insert a wavelength-driven metal reflectance (Fresnel R(λ)) as grey RGB.
 
+    The host Principled BSDF should have Metallic = 1.
+    """
     grid = np.arange(380.0, 781.0, 20.0)
     refl = metals.reflectance(metal_name, grid)
-    xs = (grid - 360.0) / 470.0
-    points = fc.mapping.curves[0].points
-    points[0].location = (float(xs[0]), float(refl[0]))
-    points[1].location = (float(xs[-1]), float(refl[-1]))
-    for x, y in zip(xs[1:-1], refl[1:-1]):
-        points.new(float(x), float(y))
-    fc.mapping.update()
+    return _curve_instance(node_tree, scene, grid, refl, f"R(λ) {metal_name}", location)
 
-    comb = tag(nodes.new("ShaderNodeCombineColor"))
-    comb.mode = "RGB"
-    comb.location = (bx, by)
-    for ch in range(3):
-        links.new(fc.outputs[0], comb.inputs[ch])
 
-    return {"nodes": created, "output_socket": comb.outputs[0]}
+def build_spectrum_instance(node_tree, scene, lam_grid, reflectance, location=(0.0, 0.0)) -> dict:
+    """Insert an arbitrary measured reflectance spectrum S(λ) as grey RGB."""
+    return _curve_instance(node_tree, scene, lam_grid, reflectance, "S(λ) override", location)
 
 
 def build_volume_density_instance(
@@ -328,40 +351,18 @@ def build_volume_density_instance(
         created.append(n.name)
         return n
 
-    lam = tag(nodes.new("ShaderNodeValue"))
-    lam.label = "spectral λ"
-    lam.location = (bx - 640, by + 120)
-    add_lambda_driver(lam, scene)
-
-    nrm = tag(nodes.new("ShaderNodeMath"))
-    nrm.operation = "MULTIPLY_ADD"
-    nrm.location = (bx - 460, by + 120)
-    nrm.inputs[1].default_value = 1.0 / 470.0
-    nrm.inputs[2].default_value = -360.0 / 470.0
-    links.new(lam.outputs[0], nrm.inputs[0])
-
     coeffs = jakob_hanika.rgb_to_coeffs(tint_rgb, illuminant, temperature)
     grid = np.arange(380.0, 781.0, 20.0)
-    absorption = np.clip(1.0 - jakob_hanika.reflectance(coeffs, grid), 0.0, 1.0)
-    xs = (grid - 360.0) / 470.0
+    absorption = 1.0 - jakob_hanika.reflectance(coeffs, grid)
 
-    fc = tag(nodes.new("ShaderNodeFloatCurve"))
-    fc.label = "absorption(λ)"
-    fc.location = (bx - 300, by)
-    fc.inputs[0].default_value = 1.0
-    links.new(nrm.outputs[0], fc.inputs[1])
-    points = fc.mapping.curves[0].points
-    points[0].location = (float(xs[0]), float(absorption[0]))
-    points[1].location = (float(xs[-1]), float(absorption[-1]))
-    for x, y in zip(xs[1:-1], absorption[1:-1]):
-        points.new(float(x), float(y))
-    fc.mapping.update()
+    norm = _driven_lambda_norm(nodes, links, scene, bx, by, tag)
+    curve = _float_curve(nodes, links, norm, grid, absorption, "absorption(λ)", bx, by, tag)
 
     scale = tag(nodes.new("ShaderNodeMath"))    # density * a(λ)
     scale.operation = "MULTIPLY"
     scale.location = (bx - 100, by)
     scale.inputs[1].default_value = float(density)
-    links.new(fc.outputs[0], scale.inputs[0])
+    links.new(curve, scale.inputs[0])
 
     return {"nodes": created, "output_socket": scale.outputs[0]}
 

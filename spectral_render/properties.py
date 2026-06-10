@@ -65,6 +65,36 @@ class SpectralMaterialSettings(bpy.types.PropertyGroup):
     )
     volume_density: FloatProperty(name="Density", default=1.0, min=0.0)
 
+    override_enabled: BoolProperty(
+        name="Spectrum Override",
+        description="Drive Base Color from a measured reflectance spectrum CSV "
+                    "(wavelength,reflectance); takes precedence over uplift/metal",
+        default=False,
+    )
+    override_csv: StringProperty(name="Spectrum CSV", subtype="FILE_PATH", default="")
+
+    glass_preset: EnumProperty(
+        name="Glass Preset",
+        items=[
+            ("N-BK7", "N-BK7", "n_d 1.5168 / V_d 64.17"),
+            ("N-SF11", "N-SF11", "n_d 1.7847 / V_d 25.76"),
+            ("N-FK51A", "N-FK51A", "n_d 1.4866 / V_d 84.47"),
+            ("FUSED_SILICA", "Fused Silica", "n_d 1.4585 / V_d 67.8"),
+            ("DIAMOND", "Diamond", "n_d 2.417 / V_d 55.3"),
+        ],
+        default="N-BK7",
+    )
+
+
+# Catalogue n_d / Abbe for the glass presets above.
+GLASS_PRESETS = {
+    "N-BK7": (1.5168, 64.17),
+    "N-SF11": (1.7847, 25.76),
+    "N-FK51A": (1.4866, 84.47),
+    "FUSED_SILICA": (1.4585, 67.80),
+    "DIAMOND": (2.4170, 55.30),
+}
+
 
 class SpectralSettings(bpy.types.PropertyGroup):
     lambda_min: FloatProperty(

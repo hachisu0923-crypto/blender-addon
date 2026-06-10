@@ -36,6 +36,7 @@ class VIEW3D_PT_spectral(bpy.types.Panel):
         col.operator("spectral.inject", text="Inject Spectral Nodes", icon="NODETREE")
         col.operator("spectral.restore", text="Restore", icon="LOOP_BACK")
         col.operator("spectral.render", text="Spectral Render", icon="RENDER_STILL")
+        col.operator("spectral.render_animation", text="Spectral Render Animation", icon="RENDER_ANIMATION")
 
         lam = context.scene.get("spectral_lambda")
         if lam is not None:
@@ -63,6 +64,13 @@ class VIEW3D_PT_spectral_material(bpy.types.Panel):
         mat = context.object.active_material
         ms = mat.spectral
         layout.label(text=mat.name, icon="MATERIAL")
+
+        layout.prop(ms, "override_enabled")
+        col = layout.column()
+        col.enabled = ms.override_enabled
+        col.prop(ms, "override_csv")
+
+        layout.separator()
         layout.prop(ms, "dispersion_enabled")
 
         col = layout.column()
@@ -75,6 +83,9 @@ class VIEW3D_PT_spectral_material(bpy.types.Panel):
             col.prop(ms, "cauchy_a")
             col.prop(ms, "cauchy_b")
             col.prop(ms, "cauchy_c")
+        row = col.row(align=True)
+        row.prop(ms, "glass_preset", text="")
+        row.operator("spectral.apply_glass_preset", text="", icon="IMPORT")
 
         layout.separator()
         layout.prop(ms, "metal_enabled")
