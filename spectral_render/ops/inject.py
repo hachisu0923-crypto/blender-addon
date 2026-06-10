@@ -116,11 +116,27 @@ def inject_material(mat, scene) -> str:
                 print(f"[spectral] override CSV failed for {mat.name}: {exc}")
         if inst is None and ms.metal_enabled:
             inst = node_group.build_metal_instance(nt, scene, ms.metal, location=loc)
+        if inst is None and sets.texture_spectral and socket.is_linked:
+            src = socket.links[0].from_node
+            if src.type == "TEX_IMAGE" and src.image is not None \
+                    and socket.links[0].from_socket.name == "Color":
+                try:
+                    coeff_img = node_group.make_coeff_image(
+                        f"spectral_coeff_{mat.name}", src.image,
+                        sets.illuminant, temp, sets.coeff_max_res,
+                    )
+                    inst = node_group.build_texture_instance(nt, scene, coeff_img, src, location=loc)
+                except Exception as exc:                       # fall back to constant
+                    print(f"[spectral] texture uplift failed for {mat.name}: {exc}")
+                    inst = None
         if inst is None:
             rgb = tuple(socket.default_value[:3])
             coeffs = jakob_hanika.rgb_to_coeffs(rgb, sets.illuminant, temp)
             inst = node_group.build_instance(nt, scene, coeffs, location=loc)
-        records.append(_record_and_replace(nt, socket, inst["output_socket"], inst["nodes"]))
+        rec = _record_and_replace(nt, socket, inst["output_socket"], inst["nodes"])
+        if inst.get("image_name"):
+            rec["injected_images"] = [inst["image_name"]]
+        records.append(rec)
 
     # --- Dispersion (IOR) -------------------------------------------------
     if mat.spectral.dispersion_enabled:

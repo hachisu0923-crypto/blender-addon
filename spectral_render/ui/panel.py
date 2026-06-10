@@ -25,6 +25,9 @@ class VIEW3D_PT_spectral(bpy.types.Panel):
         if s.illuminant == "BLACKBODY":
             layout.prop(s, "color_temperature")
         layout.prop(s, "sampling")
+        layout.prop(s, "texture_spectral")
+        if s.texture_spectral:
+            layout.prop(s, "coeff_max_res")
         layout.prop(s, "target")
 
         col = layout.column(align=True)
