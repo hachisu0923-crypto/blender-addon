@@ -10,6 +10,7 @@ from bpy.props import (
     FloatVectorProperty,
     IntProperty,
     PointerProperty,
+    StringProperty,
 )
 
 
@@ -103,6 +104,22 @@ class SpectralSettings(bpy.types.PropertyGroup):
         name="Temperature (K)", description="Black-body colour temperature",
         default=6500.0, min=1000.0, max=12000.0,
     )
+    sampling: EnumProperty(
+        name="Sampling",
+        items=[
+            ("UNIFORM", "Uniform", "Equal-interval bands"),
+            ("IMPORTANCE", "Importance", "Stratified XYZ-contribution importance sampling"),
+        ],
+        default="UNIFORM",
+    )
+    save_band_exrs: BoolProperty(
+        name="Save Band EXRs",
+        description="Write each band as a scene-linear EXR for post regrading",
+        default=False,
+    )
+    exr_dir: StringProperty(
+        name="EXR Folder", subtype="DIR_PATH", default="//spectral_bands/",
+    )
 
 
 def ensure_spectral_lambda(scene) -> None:
@@ -119,19 +136,6 @@ def dispersion_coeffs(mat_settings) -> tuple[float, float, float]:
         a, b = dispersion.abbe_to_cauchy(mat_settings.ior_d, mat_settings.abbe)
         return a, b, 0.0
     return mat_settings.cauchy_a, mat_settings.cauchy_b, mat_settings.cauchy_c
-
-
-def band_wavelengths(settings) -> tuple[list[float], float]:
-    """Centre wavelengths of each band and the band width ``dlam``.
-
-    Single source of truth for the band math -- used by both the renderer and
-    the white-point normalisation so they stay consistent.
-    """
-    n = settings.band_count
-    lo, hi = settings.lambda_min, settings.lambda_max
-    dlam = (hi - lo) / n
-    wl = [lo + (i + 0.5) * dlam for i in range(n)]
-    return wl, dlam
 
 
 def register():

@@ -10,7 +10,8 @@ import bpy
 import numpy as np
 
 from .. import properties
-from ..core import cmf, spd
+from ..core import cmf, sampling
+from ..io import exr
 
 RESULT_IMAGE = "Spectral Result"
 
@@ -63,9 +64,7 @@ class SPECTRAL_OT_render(bpy.types.Operator):
         settings = scene.spectral
         properties.ensure_spectral_lambda(scene)
 
-        wavelengths, dlam = properties.band_wavelengths(settings)
-        temp = settings.color_temperature
-        white = spd.reference_white_xyz(settings.illuminant, wavelengths, dlam, temp)
+        wavelengths, weights, white = sampling.get_samples(settings)
         if white[1] <= 0.0:
             self.report({"ERROR"}, "Illuminant Y integral is zero; check λ range")
             return {"CANCELLED"}
@@ -96,6 +95,7 @@ class SPECTRAL_OT_render(bpy.types.Operator):
                 scene.cycles.samples = settings.samples_per_band
 
             xyz_accum = None
+            band_cache = [] if settings.save_band_exrs else None
             for i, lam in enumerate(wavelengths):
                 _force_lambda_update(scene, lam)
                 grey = _render_band_to_array(
@@ -103,11 +103,14 @@ class SPECTRAL_OT_render(bpy.types.Operator):
                 )
                 if xyz_accum is None:
                     xyz_accum = np.zeros((grey.shape[0], 3), dtype=np.float64)
-                weight = cmf.cmf_at(lam) * spd.spd_at(lam, settings.illuminant, temp) * dlam
-                xyz_accum += grey[:, None] * weight[None, :]
+                xyz_accum += grey[:, None] * weights[i][None, :]
+                if band_cache is not None:
+                    band_cache.append((i, float(lam), grey.astype(np.float32)))
                 wm.progress_update(i + 1)
 
             xyz_accum /= white[1]
+            # Scene-linear sRGB; Blender's view transform (AgX/Filmic/Standard)
+            # applies on display, so the float result stays OCIO-consistent.
             rgb = np.clip(cmf.xyz_to_linear_srgb(xyz_accum), 0.0, None)
 
             # Effective output resolution (matches Blender's percentage flooring).
@@ -122,6 +125,9 @@ class SPECTRAL_OT_render(bpy.types.Operator):
             result = _get_result_image(width, height)
             result.pixels.foreach_set(out.ravel())
             result.update()
+
+            if band_cache:
+                exr.write_band_exrs(settings.exr_dir, band_cache, width, height, scene)
         finally:
             wm.progress_end()
             rs.filepath = saved["filepath"]

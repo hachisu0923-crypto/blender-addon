@@ -13,7 +13,10 @@ rendered band-by-band, and composited in CIE XYZ for physically plausible colour
 - **Phase 2 — done.** Dispersion (Cauchy / Abbe → wavelength-driven IOR), a
   Planck black-body illuminant, spectral metals (measured complex IOR → Fresnel
   reflectance via Float Curve) and wavelength-dependent volume absorption.
-- **Phases 3–4** (importance sampling, multilayer EXR, OCIO, packaging) planned.
+- **Phase 3 — done.** Stratified XYZ-importance wavelength sampling (unbiased,
+  fewer bands for the same noise), per-band scene-linear EXR output, and an
+  OCIO-consistent linear result (view transform applies on display).
+- **Phase 4** (per-object overrides, presets, animation cache, packaging) planned.
 
 ## Layout
 

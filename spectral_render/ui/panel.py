@@ -24,7 +24,13 @@ class VIEW3D_PT_spectral(bpy.types.Panel):
         layout.prop(s, "illuminant")
         if s.illuminant == "BLACKBODY":
             layout.prop(s, "color_temperature")
+        layout.prop(s, "sampling")
         layout.prop(s, "target")
+
+        col = layout.column(align=True)
+        col.prop(s, "save_band_exrs")
+        if s.save_band_exrs:
+            col.prop(s, "exr_dir")
 
         col = layout.column(align=True)
         col.operator("spectral.inject", text="Inject Spectral Nodes", icon="NODETREE")
